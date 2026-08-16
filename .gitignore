@@ -1,0 +1,30 @@
+# --- secrets ---
+.deepl-key
+.deepl-glossary-id
+
+# --- donnees personnelles, jamais versionnees ---
+prompts/*.local.txt
+config.local.ps1
+glossaire*.tsv
+glossary*.tsv
+bench/
+Output/
+*_EN.docx
+*_EN.txt
+*_revised.*
+*_corrige.*
+*_notes.md
+*_continuite.md
+*_DA.txt
+*_DA.html
+*_deepl_*.txt
+
+# --- installation lourde, hors depot ---
+LMStudio/
+lmstudio-data/
+lmstudio-appdata/
+_installers/
+
+# --- etats de travail locaux ---
+ETAT*.md
+README-LMStudio.md
