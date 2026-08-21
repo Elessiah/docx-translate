@@ -1085,10 +1085,15 @@ function ConvertFrom-FindingLines {
 
         $parts = $l -split '\s*\|\|\|\s*'
         if ($parts.Count -ge 3) {
+            # Le modele repond parfois RAS dans la colonne du motif tout en
+            # remplissant les deux autres : la ligne a la forme d'un
+            # signalement mais n'en est pas un.
+            $why = (($parts[2..($parts.Count - 1)]) -join ' ').Trim()
+            if ($why -match '^(RAS|R\.A\.S|aucune?|rien)\b') { continue }
             $out += @{
                 Fragment   = $parts[0].Trim($trimChars)
                 Suggestion = $parts[1].Trim($trimChars)
-                Reason     = (($parts[2..($parts.Count - 1)]) -join ' ').Trim()
+                Reason     = $why
                 Raw        = $l
             }
         }
