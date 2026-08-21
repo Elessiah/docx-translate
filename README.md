@@ -71,6 +71,16 @@ Sortie : un `.docx` avec la mise en forme, et le `.txt` correspondant.
 Enchaîne correction du français, mise en forme de la version française,
 traduction, révision, mise en forme de la version anglaise.
 
+### Relire un texte sans le laisser modifier
+
+```powershell
+.\proofread.ps1 -Path "mon-recit.docx" -ReportOnly -ContextFile "contexte.md"
+```
+
+Ne touche pas au fichier. Produit un `_reperage.md` : une liste de fautes
+possibles, chacune avec une chaine a coller dans Ctrl+F pour retrouver le
+passage. C'est vous qui tranchez.
+
 ### Scripts individuels
 
 | Script | Rôle |
@@ -79,7 +89,7 @@ traduction, révision, mise en forme de la version anglaise.
 | `deepl-roundtrip.ps1` | Découpe pour le copier-coller DeepL gratuit, puis restaure la mise en forme |
 | `translate.ps1` | Traduction par modèle local, bloc par bloc |
 | `review.ps1` | Révise une traduction existante en la confrontant à l'original |
-| `proofread.ps1` | Corrige la langue du texte source avant traduction |
+| `proofread.ps1` | Corrige la langue du texte source, ou la signale sans rien reecrire (`-ReportOnly`) |
 | `format-deviantart.ps1` | Prépare le texte pour un éditeur web (une ligne vide entre paragraphes) |
 | `lib-lmstudio.ps1` | Fonctions communes — lecture `.docx`, découpage, réparations |
 
@@ -109,6 +119,12 @@ une fin de tâche et s'arrête d'y traduire.
 **Terminologie tenue.** Un glossaire DeepL applique vos équivalences imposées à
 la source. En local, une fiche de continuité accumule personnages, genres et
 termes déjà traduits, et repart dans chaque bloc suivant.
+
+**Repères vérifiés.** En mode signalement, chaque citation du modèle est
+recherchée dans le fichier avant d'entrer dans le rapport. Ce qui ne s'y
+retrouve pas part dans une annexe, signalé comme non vérifiable — un modèle
+cite volontiers un passage qu'il a reformulé, et un repère faux coûte plus
+cher qu'un oubli.
 
 **Typographie française rétablie.** Apostrophes courbes et espaces insécables
 sont restaurés après coup — les modèles les dégradent malgré la consigne.
@@ -140,6 +156,50 @@ fois de suite. À correctif isolé :
 | Blocs réussis | 2/7 | **17/19** |
 | Paragraphes conservés | 103/126 | **125/126** |
 
+### Faire réviser une traduction par le modèle : abandonné
+
+Sur un chapitre de 76 paragraphes, soumettre une traduction DeepL à la révision
+du modèle local a produit une sortie que le garde-fou a déclarée valide — 76
+paragraphes en entrée, 76 en sortie — alors que **29 paragraphes sur 76 étaient
+la source française recopiée**, avec deux lignes de service du modèle insérées
+comme paragraphes et un décalage d'alignement derrière elles.
+
+Deux blocs en écart, l'un à `+1` et l'autre à `-1`, s'étaient annulés.
+
+La leçon porte moins sur le modèle que sur le contrôle : il comptait les
+paragraphes, mais ne vérifiait ni la langue de sortie, ni la présence de
+méta-commentaire, ni l'écart bloc par bloc plutôt que cumulé. **Un contrôle qui
+mesure la mauvaise grandeur ne protège de rien** — et il rassure, ce qui est
+pire que pas de contrôle du tout.
+
+### Signaler plutôt que corriger
+
+Le correcteur qui réécrit produit aussi de fausses corrections, et les plus
+coûteuses visent le style : restituer un `ne` de négation dans un dialogue oral,
+basculer un verbe au passé simple au milieu d'un récit au présent. Ces dégâts-là
+ne se voient pas à la relecture rapide.
+
+D'où le mode `-ReportOnly` : le modèle n'écrit plus le texte, seulement une
+liste. Il ne peut donc rien casser, et le nombre de paragraphes cesse d'être un
+enjeu. Le problème se déplace sur l'exactitude des repères, qui est vérifiable
+par le code — donc traitée par le code.
+
+Mesure sur un extrait dont les fautes étaient connues à l'avance :
+
+| Configuration | Fautes réelles pointées |
+|---|---|
+| Par blocs, 1 passe | 3 / 8 |
+| Par blocs, 3 passes | 6 / 8 |
+| Paragraphe par paragraphe + fiche de contexte, 2 passes | **8 / 8** |
+
+Deux choses font la différence : examiner **un seul paragraphe à la fois**, ses
+voisins fournis en lecture seule, et donner une **fiche de contexte** indiquant
+le genre des personnages et le temps du récit. Sans elle le modèle devine, et
+signale comme fautifs des accords corrects.
+
+Les corrections *proposées*, elles, restent souvent fausses. Le rapport le dit
+en tête : servez-vous du repère, jugez la correction.
+
 ### API DeepL contre modèle local
 
 Sur un chapitre de 1 796 mots : **1 seconde** contre 319 s. Sur la précision,
@@ -155,8 +215,9 @@ qui sort de la machine.
 
 - La mise en forme Word au-delà du gras et de l'italique n'est pas transportée.
 - Les `.pdf` doivent être convertis en `.docx` au préalable.
-- Le correcteur local produit aussi de **fausses** corrections : le rapport
-  `_notes.md` doit être relu, ce n'est pas un correcteur automatique de confiance.
+- Le correcteur local produit aussi de **fausses** corrections, y compris sur
+  le style. Préférez `-ReportOnly`, qui ne modifie rien.
+- En mode signalement, le repère est fiable, la correction proposée ne l'est pas.
 - Une relecture humaine reste nécessaire, en particulier sur les idiomes.
 
 ---

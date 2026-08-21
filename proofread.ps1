@@ -34,6 +34,10 @@
   .\proofread.ps1 -Path "textes\mon-recit.docx"
 
 .EXAMPLE
+  # Mode reperage : ne modifie rien, produit la liste des fautes a verifier
+  .\proofread.ps1 -Path "textes\mon-recit.docx" -ReportOnly
+
+.EXAMPLE
   .\proofread.ps1 -Path "textes\mon-recit.docx" -Out "textes\mon-recit_corrige.txt" -Marks
 #>
 
@@ -52,7 +56,10 @@ param(
     [string]$PromptFile,
     [int]$ContextLength = 20000,
     [switch]$Marks,
-    [switch]$Think
+    [switch]$Think,
+    [switch]$ReportOnly,
+    [switch]$ByBlock,
+    [int]$Passes = 2
 )
 
 $ErrorActionPreference = "Stop"
@@ -64,6 +71,7 @@ if (-not $Model) { $Model = Get-DefaultModel }
 Initialize-LMStudioSession -Model $Model -Endpoint $Endpoint -ContextLength $ContextLength
 
 $item = Get-Item $Path
+if ($ReportOnly) { $Marks = $false }
 if ($Marks -and $item.Extension.ToLower() -eq '.docx') {
     $raw = Read-DocxMarkedText -File $Path
 }
@@ -76,11 +84,21 @@ if (-not $Out) {
     if ($ext -eq '.docx') { $ext = '.txt' }
     $Out = Join-Path $item.DirectoryName ($item.BaseName + "_corrige" + $ext)
 }
+if ($ReportOnly -and -not $ReportPath) {
+    $ReportPath = Join-Path $item.DirectoryName ($item.BaseName + "_reperage.md")
+}
 if (-not $ReportPath) {
     $ReportPath = [System.IO.Path]::ChangeExtension($Out, $null).TrimEnd('.') + "_notes.md"
 }
 
-$systemPrompt = Get-PromptText -Name 'proofread' -PromptFile $PromptFile
+# La reflexion casse les taches ou le modele REPRODUIT un texte entier, elle
+# aide celles ou il JUGE. En mode reperage il ne reproduit plus rien : on
+# l'active par defaut, sauf si l'appelant a tranche lui-meme.
+if ($ReportOnly -and -not $PSBoundParameters.ContainsKey('Think')) { $Think = $true }
+
+$promptName = 'proofread'
+if ($ReportOnly) { $promptName = 'proofread-signal' }
+$systemPrompt = Get-PromptText -Name $promptName -PromptFile $PromptFile
 
 if ($Marks) {
     $systemPrompt += @'
@@ -106,6 +124,276 @@ if ($ctx) {
 # ---------------------------------------------------------------- decoupage
 $paragraphs = Get-Paragraphs -Text $raw
 $chunkParas = Group-ParagraphsIntoChunks -Paragraphs $paragraphs -MaxWords $MaxWords -MaxParagraphs $MaxParagraphs
+
+# ------------------------------------------------------ mode reperage seul
+# Le modele ne rend plus le texte, seulement une liste. Il ne peut donc rien
+# casser : le garde-fou sur le nombre de paragraphes devient sans objet.
+# Le prix a payer se deplace sur l'exactitude des reperes, traitee par
+# Resolve-FindingAnchor : une citation absente du texte est ecartee.
+if ($ReportOnly) {
+
+    # Unites d'examen. Par defaut UN paragraphe a la fois, ses voisins fournis
+    # en lecture seule : l'attention n'est plus diluee sur huit paragraphes, et
+    # l'ancre ne peut plus glisser sur un voisin. Mesure sur un extrait connu :
+    # par blocs il fallait 3 passes pour retrouver ce qu'une seule trouve ici.
+    # -ByBlock revient au decoupage par blocs, plus rapide, moins couvrant.
+    $units = @()
+    if ($ByBlock) {
+        $acc = 0
+        foreach ($cp in $chunkParas) {
+            $units += @{
+                From = $acc; To = ($acc + $cp.Count - 1)
+                Body = ($cp -join "`n`n"); Before = @(); After = @()
+            }
+            $acc += $cp.Count
+        }
+    }
+    else {
+        for ($p = 0; $p -lt $paragraphs.Count; $p++) {
+            $before = @(); $w = 0
+            for ($k = $p - 1; ($k -ge 0) -and ($k -ge $p - 3); $k--) {
+                $w += Measure-Words $paragraphs[$k]
+                if ($w -gt 200) { break }
+                $before = @($paragraphs[$k]) + $before
+            }
+            $after = @()
+            if (($p + 1) -lt $paragraphs.Count) { $after = @($paragraphs[$p + 1]) }
+            $units += @{
+                From = $p; To = $p
+                Body = $paragraphs[$p]; Before = $before; After = $after
+            }
+        }
+    }
+
+    if (-not $ByBlock) {
+        $systemPrompt += "`n`nON NE TE DONNE QU'UN SEUL PARAGRAPHE A EXAMINER, precede et " +
+                         "suivi de son contexte.`nTu ne signales RIEN dans le contexte : il " +
+                         "n'est la que pour que tu saches de quoi parle le passage, qui parle, " +
+                         "et a quel temps le recit est mene.`nExamine le paragraphe mot par mot."
+    }
+
+    # Le genre du narrateur est l'information la plus rentable de la fiche :
+    # sans elle le modele devine, et signale des accords corrects comme fautifs.
+    if ($ctx) {
+        $systemPrompt += "`n`nSERS-TOI DE LA FICHE DE CONTEXTE POUR VERIFIER :`n" +
+            "- le GENRE du narrateur et de chaque personnage. Tous les participes " +
+            "passes et adjectifs qui s'y rapportent doivent s'accorder avec lui.`n" +
+            "- le TEMPS du recit. Un verbe qui en sort est a signaler en categorie temps.`n" +
+            "- QUI PARLE dans chaque incise de dialogue, pour le genre du verbe.`n" +
+            "Un nom propre ou un terme qui figure dans la fiche n'est jamais une faute. " +
+            "Si la fiche ne dit rien sur un point, ne l'inventes pas : classe en doute."
+    }
+
+    Write-Host "Source   : $Path" -ForegroundColor Cyan
+    Write-Host "Rapport  : $ReportPath" -ForegroundColor Cyan
+    $grain = 'paragraphe par paragraphe'
+    if ($ByBlock) { $grain = 'par blocs' }
+    Write-Host ("{0} mots, {1} paragraphes -> {2} unite(s) {3}, {4} passe(s)" -f `
+        (Measure-Words $raw), $paragraphs.Count, $units.Count, $grain, $Passes) -ForegroundColor Cyan
+    if ($ctx) { Write-Host ("Contexte : {0} mots" -f (Measure-Words $ctx)) -ForegroundColor Cyan }
+    Write-Host "Aucun mot du texte ne sera modifie." -ForegroundColor DarkGray
+    Write-Host ""
+
+    $sw = [System.Diagnostics.Stopwatch]::StartNew()
+    $genTokens = 0
+    $found = @(); $orphans = @(); $seen = @{}
+
+    for ($i = 0; $i -lt $units.Count; $i++) {
+        $u = $units[$i]
+        $from = $u.From; $to = $u.To
+
+        if ($ByBlock) {
+            $userMsg = $u.Body
+        }
+        else {
+            $userMsg = ""
+            if ($u.Before.Count) {
+                $userMsg += "CONTEXTE QUI PRECEDE (ne rien signaler ici) :`n---`n" +
+                            ($u.Before -join "`n`n") + "`n---`n`n"
+            }
+            $userMsg += "PARAGRAPHE A EXAMINER (signale uniquement ici) :`n---`n" +
+                        $u.Body + "`n---"
+            if ($u.After.Count) {
+                $userMsg += "`n`nCONTEXTE QUI SUIT (ne rien signaler ici) :`n---`n" +
+                            ($u.After -join "`n`n") + "`n---"
+            }
+        }
+
+        Write-Host ("[{0}/{1}] paragraphe {2}..." -f ($i + 1), $units.Count, ($from + 1)) -NoNewline
+
+        $kept = 0; $lost = 0
+        for ($pass = 1; $pass -le $Passes; $pass++) {
+            # Deux lectures identiques ne trouvent pas plus qu'une seule :
+            # on decale la temperature pour que la passe suivante apporte
+            # vraiment quelque chose.
+            $temp = $Temperature + (0.15 * ($pass - 1))
+            $r = Invoke-LMStudioChat -System $systemPrompt -User $userMsg -Model $Model `
+                    -Endpoint $Endpoint -Temperature $temp -Think:$Think -MaxTokens 1536
+            $genTokens += $r.Tokens
+
+            foreach ($f in (ConvertFrom-FindingLines -Text $r.Text)) {
+                if (-not $f.Fragment) {
+                    $orphans += @{ Para = $from; Raw = $f.Raw; Why = 'ligne hors format' }
+                    $lost++
+                    continue
+                }
+                $key = (ConvertTo-MatchKey -Text ($f.Fragment + '|' + $f.Suggestion)).Key + "|$from"
+                if ($seen.ContainsKey($key)) { continue }
+                $seen[$key] = $true
+
+                $a = Resolve-FindingAnchor -Fragment $f.Fragment -Paragraphs $paragraphs `
+                        -HintFrom $from -HintTo $to
+                if (-not $a.Found) {
+                    $orphans += @{ Para = $from; Raw = $f.Raw; Why = 'citation absente du texte' }
+                    $lost++
+                    continue
+                }
+                # En mode paragraphe, une ancre qui tombe ailleurs vient du
+                # contexte : c'est ce qu'on a explicitement interdit de signaler.
+                if ((-not $ByBlock) -and ($a.Para -ne $from)) {
+                    $orphans += @{ Para = $from; Raw = $f.Raw; Why = 'signale dans le contexte, pas dans le paragraphe' }
+                    $lost++
+                    continue
+                }
+                $found += @{
+                    Para = $a.Para; Start = $a.Start; Length = $a.Length
+                    Suggestion = $f.Suggestion; Reason = $f.Reason; Source = 'modele'
+                }
+                $kept++
+            }
+        }
+        if ($lost) {
+            Write-Host (" {0} retenu(s), {1} ecarte(s)" -f $kept, $lost) -ForegroundColor DarkYellow
+        }
+        elseif ($kept) {
+            Write-Host (" {0} retenu(s)" -f $kept) -ForegroundColor Green
+        }
+        else {
+            Write-Host " rien" -ForegroundColor DarkGray
+        }
+    }
+
+    # Ce qui se detecte sans modele se detecte mieux sans modele.
+    foreach ($m in (Find-MechanicalIssues -Paragraphs $paragraphs)) {
+        $key = "MECA|$($m.Para)|$($m.Start)|$($m.Reason)"
+        if ($seen.ContainsKey($key)) { continue }
+        $seen[$key] = $true
+        $found += @{
+            Para = $m.Para; Start = $m.Start; Length = $m.Length
+            Suggestion = $m.Suggestion; Reason = $m.Reason; Source = 'mecanique'
+        }
+    }
+
+    $sw.Stop()
+    $found = @($found | Sort-Object @{ Expression = { $_.Para } }, @{ Expression = { $_.Start } })
+
+    # Deux passes signalent souvent la meme faute avec un fragment plus ou moins
+    # large. On garde le repere le plus precis plutot que d'afficher deux fois
+    # la meme chose : c'est du bruit sans information.
+    $dedup = @()
+    foreach ($f in $found) {
+        $dup = $false
+        for ($k = 0; $k -lt $dedup.Count; $k++) {
+            $d = $dedup[$k]
+            if ($d.Para -ne $f.Para) { continue }
+            $overlap = [Math]::Min($d.Start + $d.Length, $f.Start + $f.Length) -
+                       [Math]::Max($d.Start, $f.Start)
+            if ($overlap -le 0) { continue }
+            $shortest = [Math]::Min($d.Length, $f.Length)
+            if ($overlap -lt ($shortest * 0.8)) { continue }
+            $dup = $true
+            # on conserve le fragment le plus court, donc le plus precis
+            if ($f.Length -lt $d.Length) {
+                $f.Reason = Join-Reasons -First $f.Reason -Second $d.Reason
+                $dedup[$k] = $f
+            }
+            else {
+                $d.Reason = Join-Reasons -First $d.Reason -Second $f.Reason
+            }
+            break
+        }
+        if (-not $dup) { $dedup += $f }
+    }
+    $merged = $found.Count - $dedup.Count
+    $found = $dedup
+
+    $typo = Measure-TypographyGaps -Text $raw
+
+    $BT = [string][char]0x60
+    $lines = @()
+    $lines += "# Reperage de fautes - francais"
+    $lines += ""
+    $lines += "- Source : $Path"
+    $lines += "- Date   : $(Get-Date -Format 'yyyy-MM-dd HH:mm')"
+    $lines += "- $($paragraphs.Count) paragraphes, $Passes passe(s), $($found.Count) signalement(s) avec repere"
+    $lines += ""
+    $lines += "**Aucun mot de ton texte n'a ete modifie.** Chaque entree donne une chaine"
+    $lines += "verifiee presente dans le fichier : colle-la dans Ctrl+F pour tomber dessus."
+    $lines += "Les signalements sont donnes dans l'ordre du texte."
+    $lines += ""
+    $lines += "La colonne de droite est ce que le modele **propose**. Elle est souvent"
+    $lines += "fausse meme quand le repere est bon : sers-toi du repere, juge la correction."
+    $lines += ""
+
+    $lastPara = -1
+    foreach ($f in $found) {
+        if ($f.Para -ne $lastPara) {
+            $lines += "## Paragraphe $($f.Para + 1)"
+            $lines += ""
+            $lastPara = $f.Para
+        }
+        $p = $paragraphs[$f.Para]
+        $search  = Get-UniqueSearchString -Paragraph $p -Start $f.Start -Length $f.Length -AllParagraphs $paragraphs
+        $excerpt = Get-AnchorExcerpt -Paragraph $p -Start $f.Start -Length $f.Length
+
+        $head = $f.Reason
+        if ($f.Source -eq 'mecanique') { $head = $head + ' (detection mecanique)' }
+        if ($f.Suggestion) { $head = $head + '  ->  ' + $f.Suggestion }
+
+        $lines += "**Ctrl+F** $BT$search$BT"
+        $lines += ""
+        $lines += $head
+        $lines += ""
+        $lines += "> $excerpt"
+        $lines += ""
+    }
+
+    if ($typo.StraightApostrophes -or $typo.MissingNbsp) {
+        $lines += "## Typographie"
+        $lines += ""
+        $lines += "Comptee, pas listee : ces ecarts se comptent en masse et noieraient le"
+        $lines += "reste. Le mode correction les repare mecaniquement."
+        $lines += ""
+        $lines += "- apostrophes droites au lieu de courbes : $($typo.StraightApostrophes)"
+        $lines += "- ponctuations doubles sans espace insecable : $($typo.MissingNbsp)"
+        $lines += ""
+    }
+
+    if ($orphans.Count) {
+        $lines += "## Signalements ecartes ($($orphans.Count))"
+        $lines += ""
+        $lines += "Citation introuvable dans le paragraphe examine : impossible de dire ou le"
+        $lines += "modele voulait en venir, donc impossible d'en faire un repere. Listes ici"
+        $lines += "plutot que jetes, mais a lire avec mefiance."
+        $lines += ""
+        foreach ($o in $orphans) { $lines += "- paragraphe $($o.Para + 1) - $($o.Why) : $($o.Raw)" }
+        $lines += ""
+    }
+
+    Write-Utf8NoBom -Path $ReportPath -Content ($lines -join "`n")
+
+    Write-Host ""
+    Write-Host ("Termine en {0:N0} s - {1} tokens" -f $sw.Elapsed.TotalSeconds, $genTokens) -ForegroundColor Yellow
+    $meca = @($found | Where-Object { $_.Source -eq 'mecanique' }).Count
+    Write-Host ("Signalements avec repere : {0} dont {1} mecanique(s)" -f $found.Count, $meca) -ForegroundColor Yellow
+    if ($merged) { Write-Host ("Doublons fusionnes : {0}" -f $merged) -ForegroundColor DarkGray }
+    if ($orphans.Count) {
+        Write-Host ("Ecartes faute de repere : {0}" -f $orphans.Count) -ForegroundColor DarkYellow
+    }
+    Write-Host "Rapport : $ReportPath" -ForegroundColor Yellow
+    return
+}
+
 
 Write-Host "Source  : $Path" -ForegroundColor Cyan
 Write-Host "Sortie  : $Out" -ForegroundColor Cyan

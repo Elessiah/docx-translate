@@ -786,3 +786,274 @@ function Write-Utf8NoBom {
     param([Parameter(Mandatory)][string]$Path, [Parameter(Mandatory)][string]$Content)
     [System.IO.File]::WriteAllText($Path, $Content, (New-Object System.Text.UTF8Encoding($false)))
 }
+
+# ============================================================================
+#  Reperage sans reecriture : le modele signale, il ne corrige pas.
+#  Chaque signalement est ancre mecaniquement dans le texte source. Ce qui ne
+#  s'y retrouve pas est marque comme tel, jamais presente comme un fait : un
+#  repere faux coute plus cher a l'auteur qu'un oubli.
+# ============================================================================
+
+function ConvertTo-MatchKey {
+    <# Forme normalisee d'un texte pour la recherche, avec la table de
+       correspondance vers les positions d'origine. Neutralise la casse, les
+       apostrophes courbes, les guillemets et les blancs multiples : le modele
+       recopie rarement une citation au caractere pres. #>
+    param([Parameter(Mandatory)][AllowEmptyString()][string]$Text)
+
+    $sb  = New-Object System.Text.StringBuilder
+    $map = New-Object System.Collections.Generic.List[int]
+    $prevSpace = $true
+    for ($i = 0; $i -lt $Text.Length; $i++) {
+        $c = $Text[$i]
+        if ([char]::IsWhiteSpace($c)) {
+            if ($prevSpace) { continue }
+            [void]$sb.Append(' '); $map.Add($i); $prevSpace = $true
+            continue
+        }
+        $prevSpace = $false
+        $lc = [char]::ToLowerInvariant($c)
+        switch ([int]$lc) {
+            0x2019 { $lc = [char]0x27 }
+            0x02BC { $lc = [char]0x27 }
+            0x201C { $lc = [char]0x22 }
+            0x201D { $lc = [char]0x22 }
+            0x2013 { $lc = [char]0x2D }
+            0x2014 { $lc = [char]0x2D }
+        }
+        [void]$sb.Append($lc); $map.Add($i)
+    }
+    @{ Key = $sb.ToString(); Map = $map }
+}
+
+function Measure-KeyOccurrences {
+    <# Nombre d'endroits du texte ou la chaine apparait, comparaison normalisee. #>
+    param(
+        [Parameter(Mandatory)][AllowEmptyString()][string]$Needle,
+        [Parameter(Mandatory)][AllowEmptyCollection()][string[]]$Paragraphs
+    )
+    $nk = (ConvertTo-MatchKey -Text $Needle).Key.Trim()
+    if (-not $nk) { return 0 }
+    $n = 0
+    foreach ($p in $Paragraphs) {
+        $pk = (ConvertTo-MatchKey -Text $p).Key
+        $pos = 0
+        while ($true) {
+            $j = $pk.IndexOf($nk, $pos)
+            if ($j -lt 0) { break }
+            $n++; $pos = $j + 1
+        }
+    }
+    $n
+}
+
+function Resolve-FindingAnchor {
+    <# Retrouve un fragment cite par le modele dans le texte source. C'est le
+       garde-fou central du mode reperage : ce qui ne se retrouve pas ici n'a
+       pas ete lu dans le texte, donc n'est pas un repere utilisable.
+       HintFrom / HintTo restreignent au bloc traite, pour ne pas ancrer sur
+       une occurrence identique situee ailleurs. #>
+    param(
+        [Parameter(Mandatory)][AllowEmptyString()][string]$Fragment,
+        [Parameter(Mandatory)][string[]]$Paragraphs,
+        [int]$HintFrom = -1,
+        [int]$HintTo = -1
+    )
+    $fk = (ConvertTo-MatchKey -Text $Fragment).Key.Trim()
+    if ($fk.Length -lt 3) { return @{ Found = $false } }
+
+    $hits = @()
+    for ($i = 0; $i -lt $Paragraphs.Count; $i++) {
+        $k = ConvertTo-MatchKey -Text $Paragraphs[$i]
+        $pos = 0
+        while ($true) {
+            $j = $k.Key.IndexOf($fk, $pos)
+            if ($j -lt 0) { break }
+            $st = $k.Map[$j]
+            $li = [Math]::Min($j + $fk.Length - 1, $k.Map.Count - 1)
+            $en = $k.Map[$li]
+            $hits += @{ Para = $i; Start = $st; Length = ($en - $st + 1) }
+            $pos = $j + 1
+        }
+    }
+    if (-not $hits.Count) { return @{ Found = $false } }
+
+    $pick = $hits[0]
+    if ($HintFrom -ge 0) {
+        $inChunk = @($hits | Where-Object { $_.Para -ge $HintFrom -and $_.Para -le $HintTo })
+        if ($inChunk.Count) { $pick = $inChunk[0] }
+    }
+    @{ Found = $true; Para = $pick.Para; Start = $pick.Start
+       Length = $pick.Length; Count = $hits.Count }
+}
+
+function Get-UniqueSearchString {
+    <# Chaine a taper dans Ctrl+F : le fragment tel qu'il est reellement ecrit
+       dans le fichier, elargi aux mots voisins jusqu'a ne designer qu'un seul
+       endroit du texte. #>
+    param(
+        [Parameter(Mandatory)][string]$Paragraph,
+        [Parameter(Mandatory)][int]$Start,
+        [Parameter(Mandatory)][int]$Length,
+        [Parameter(Mandatory)][AllowEmptyCollection()][string[]]$AllParagraphs
+    )
+    $s = $Start; $e = $Start + $Length
+    while ($s -gt 0 -and [char]::IsLetterOrDigit($Paragraph[$s - 1])) { $s-- }
+    while ($e -lt $Paragraph.Length -and [char]::IsLetterOrDigit($Paragraph[$e])) { $e++ }
+
+    for ($round = 0; $round -lt 6; $round++) {
+        $cand = $Paragraph.Substring($s, $e - $s).Trim()
+        if ((Measure-KeyOccurrences -Needle $cand -Paragraphs $AllParagraphs) -le 1) { return $cand }
+        if (($e - $s) -gt 90) { return $cand }
+        $s = [Math]::Max(0, $s - 14)
+        $e = [Math]::Min($Paragraph.Length, $e + 14)
+        while ($s -gt 0 -and [char]::IsLetterOrDigit($Paragraph[$s - 1])) { $s-- }
+        while ($e -lt $Paragraph.Length -and [char]::IsLetterOrDigit($Paragraph[$e])) { $e++ }
+    }
+    $Paragraph.Substring($s, $e - $s).Trim()
+}
+
+function Get-AnchorExcerpt {
+    <# Extrait du paragraphe avec le fragment mis en gras, pour reconnaitre le
+       passage sans ouvrir le fichier. #>
+    param(
+        [Parameter(Mandatory)][string]$Paragraph,
+        [Parameter(Mandatory)][int]$Start,
+        [Parameter(Mandatory)][int]$Length,
+        [int]$Around = 70
+    )
+    $s = [Math]::Max(0, $Start - $Around)
+    $e = [Math]::Min($Paragraph.Length, $Start + $Length + $Around)
+    while ($s -gt 0 -and [char]::IsLetterOrDigit($Paragraph[$s - 1])) { $s-- }
+    while ($e -lt $Paragraph.Length -and [char]::IsLetterOrDigit($Paragraph[$e])) { $e++ }
+
+    $pre  = $Paragraph.Substring($s, $Start - $s)
+    $hit  = $Paragraph.Substring($Start, $Length)
+    $post = $Paragraph.Substring($Start + $Length, $e - ($Start + $Length))
+    $txt = $pre + '**' + $hit + '**' + $post
+    if ($s -gt 0) { $txt = '[...]' + $txt }
+    if ($e -lt $Paragraph.Length) { $txt = $txt + '[...]' }
+    ($txt -replace '\s+', ' ').Trim()
+}
+
+function ConvertFrom-FindingLines {
+    <# Lit les signalements du modele. Une par ligne :
+         fragment exact ||| correction proposee ||| motif
+       Une ligne hors format est conservee brute et marquee : en mode reperage
+       rien n'est jete en silence, c'est l'auteur qui tranche. #>
+    param([Parameter(Mandatory)][AllowEmptyString()][string]$Text)
+
+    $trimChars = [char[]]@([char]0x22, [char]0x201C, [char]0x201D, [char]0x27,
+                           [char]0x2019, [char]0x60, ' ')
+    $out = @()
+    foreach ($line in ($Text -split '\r?\n')) {
+        $l = $line.Trim()
+        $l = $l -replace '^\s*[-*]\s+', ''
+        $l = $l -replace '^\s*\d+[.)]\s+', ''
+        if (-not $l) { continue }
+        if ($l -match '^#') { continue }
+        if ($l -match '^(RAS|R\.A\.S|aucune?|rien a signaler)\b') { continue }
+
+        $parts = $l -split '\s*\|\|\|\s*'
+        if ($parts.Count -ge 3) {
+            $out += @{
+                Fragment   = $parts[0].Trim($trimChars)
+                Suggestion = $parts[1].Trim($trimChars)
+                Reason     = (($parts[2..($parts.Count - 1)]) -join ' ').Trim()
+                Raw        = $l
+            }
+        }
+        else {
+            $out += @{ Fragment = ''; Suggestion = ''; Reason = ''; Raw = $l }
+        }
+    }
+    , $out
+}
+
+function Find-MechanicalIssues {
+    <# Fautes reperables sans modele. Sur ces categories la position est exacte
+       et il n'y a pas d'oubli possible : autant ne pas les confier a un LLM. #>
+    param([Parameter(Mandatory)][string[]]$Paragraphs)
+
+    # mots qui se redoublent legitimement en francais
+    $twice = 'nous|vous|si|tres|bien|tout|toute|non|oui|ha|ah|oh|eh|hi|ho'
+    $out = @()
+
+    for ($i = 0; $i -lt $Paragraphs.Count; $i++) {
+        $p = $Paragraphs[$i]
+
+        foreach ($m in [regex]::Matches($p, '\b(\p{L}{2,})(\s+)\1\b', 'IgnoreCase')) {
+            if ($m.Groups[1].Value -match "^($twice)$") { continue }
+            $out += @{ Para = $i; Start = $m.Index; Length = $m.Length
+                       Fragment = $m.Value; Suggestion = $m.Groups[1].Value
+                       Reason = 'mot repete a l identique' }
+        }
+        foreach ($m in [regex]::Matches($p, '\s+,')) {
+            $out += @{ Para = $i; Start = $m.Index; Length = $m.Length
+                       Fragment = $m.Value; Suggestion = ','
+                       Reason = 'espace avant la virgule' }
+        }
+        foreach ($m in [regex]::Matches($p, '(?<![.\d])\s+\.(?!\.)')) {
+            $out += @{ Para = $i; Start = $m.Index; Length = $m.Length
+                       Fragment = $m.Value; Suggestion = '.'
+                       Reason = 'espace avant le point' }
+        }
+        foreach ($m in [regex]::Matches($p, '(?<=\S)  +(?=\S)')) {
+            $out += @{ Para = $i; Start = $m.Index; Length = $m.Length
+                       Fragment = $m.Value; Suggestion = ' '
+                       Reason = 'espaces multiples' }
+        }
+
+        $op = ([regex]::Matches($p, '\(')).Count
+        $cl = ([regex]::Matches($p, '\)')).Count
+        if ($op -ne $cl) {
+            $out += @{ Para = $i; Start = 0; Length = [Math]::Min(40, $p.Length)
+                       Fragment = ''; Suggestion = ''
+                       Reason = "parentheses non appariees : $op ouvrante(s), $cl fermante(s)" }
+        }
+    }
+    , $out
+}
+
+function Measure-TypographyGaps {
+    <# Compte les ecarts typographiques sans les lister un par un : ils se
+       comptent par centaines et noieraient les vraies fautes. Le mode
+       correction les repare mecaniquement. #>
+    param([Parameter(Mandatory)][string]$Text)
+    $NBSP = [string][char]0x00A0
+    @{
+        StraightApostrophes = ([regex]::Matches($Text, "(?<=\p{L})'(?=\p{L})")).Count
+        MissingNbsp         = ([regex]::Matches($Text, "(?<=\S)(?<![$NBSP])[?!;](?=\s|`$)")).Count
+    }
+}
+
+function Join-Reasons {
+    <# Fusionne deux motifs de signalement sans repeter le meme deux fois.
+       Deux passes rendent souvent le meme motif a l'accent pres : on compare
+       sans accent ni casse, sinon le rapport affiche des doublons. #>
+    param(
+        [Parameter(Mandatory)][AllowEmptyString()][string]$First,
+        [Parameter(Mandatory)][AllowEmptyString()][string]$Second
+    )
+    $seen = @{}
+    $out  = @()
+    foreach ($chunk in @($First, $Second)) {
+        foreach ($r in ($chunk -split '\s+/\s+')) {
+            $t = $r.Trim()
+            if (-not $t) { continue }
+            $flat = $t.Normalize([System.Text.NormalizationForm]::FormD)
+            $sb = New-Object System.Text.StringBuilder
+            foreach ($ch in $flat.ToCharArray()) {
+                if ([System.Globalization.CharUnicodeInfo]::GetUnicodeCategory($ch) -ne
+                    [System.Globalization.UnicodeCategory]::NonSpacingMark) {
+                    [void]$sb.Append($ch)
+                }
+            }
+            $key = ($sb.ToString().ToLowerInvariant() -replace '[^a-z0-9]', '')
+            if ($seen.ContainsKey($key)) { continue }
+            $seen[$key] = $true
+            $out += $t
+        }
+    }
+    $out -join ' / '
+}
