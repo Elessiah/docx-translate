@@ -289,6 +289,120 @@ function Initialize-LMStudioSession {
     Write-Host "Modele    : OK" -ForegroundColor DarkGray
 }
 
+# ============================================================================
+#  Comptabilite des tokens.
+#  On se contente de lire le champ "usage" que le serveur renvoie deja dans
+#  chaque reponse : aucune requete supplementaire, aucun changement dans ce qui
+#  est envoye au modele. Le suivi ne peut donc pas influencer la generation.
+# ============================================================================
+
+$script:TokenLedger = $null
+
+function Reset-TokenLedger {
+    param([string]$Label = '')
+    $script:TokenLedger = [ordered]@{
+        Label      = $Label
+        Calls      = 0
+        Prompt     = 0
+        Completion = 0
+        Total      = 0
+        Truncated  = 0
+        Seconds    = 0.0
+        MaxPrompt  = 0
+        Started    = (Get-Date)
+    }
+}
+
+function Add-TokenLedgerEntry {
+    <# Appelee par Invoke-LMStudioChat apres chaque aller-retour. #>
+    param(
+        [int]$Prompt = 0,
+        [int]$Completion = 0,
+        [double]$Seconds = 0,
+        [switch]$WasTruncated
+    )
+    if (-not $script:TokenLedger) { Reset-TokenLedger }
+    $l = $script:TokenLedger
+    $l.Calls++
+    $l.Prompt     += $Prompt
+    $l.Completion += $Completion
+    $l.Total      += ($Prompt + $Completion)
+    $l.Seconds    += $Seconds
+    if ($Prompt -gt $l.MaxPrompt) { $l.MaxPrompt = $Prompt }
+    if ($WasTruncated) { $l.Truncated++ }
+}
+
+function Get-TokenLedger {
+    if (-not $script:TokenLedger) { Reset-TokenLedger }
+    $script:TokenLedger
+}
+
+function Write-TokenSummary {
+    <# Resume lisible en fin de script. Les tokens d'entree sont separes des
+       tokens generes : en traitement paragraphe par paragraphe, le prompt
+       systeme et la fiche de contexte sont renvoyes a chaque appel et pesent
+       souvent plus lourd que tout ce que le modele ecrit. #>
+    param([string]$Prefix = '')
+
+    try { $l = Get-TokenLedger } catch { return }
+    if (-not $l -or -not $l.Calls) { return }
+
+    $genRate = 0.0
+    if ($l.Seconds -gt 0) { $genRate = $l.Completion / $l.Seconds }
+    $share = 0
+    if ($l.Total -gt 0) { $share = [int](100 * $l.Prompt / $l.Total) }
+
+    Write-Host ""
+    Write-Host ($Prefix + ("Tokens : {0:N0} au total sur {1} appel(s)" -f $l.Total, $l.Calls)) -ForegroundColor Yellow
+    Write-Host ($Prefix + ("  entree  : {0,9:N0}  ({1} % du total, pointe a {2:N0} par appel)" -f `
+        $l.Prompt, $share, $l.MaxPrompt)) -ForegroundColor DarkGray
+    Write-Host ($Prefix + ("  generes : {0,9:N0}  ({1:N1} tok/s)" -f $l.Completion, $genRate)) -ForegroundColor DarkGray
+    if ($l.Truncated) {
+        Write-Host ($Prefix + ("  ATTENTION : {0} reponse(s) coupee(s) par max_tokens" -f $l.Truncated)) -ForegroundColor Red
+    }
+}
+
+function Write-TokenLog {
+    <# Ajoute une ligne au journal cumulatif, pour suivre la consommation d'une
+       execution a l'autre. Le fichier contient des chemins de travail : il est
+       exclu du depot. #>
+    param(
+        [string]$Path,
+        [string]$Task = '',
+        [string]$Model = '',
+        [string]$Source = '',
+        [string]$Note = ''
+    )
+    try { $l = Get-TokenLedger } catch { return }
+    if (-not $l -or -not $l.Calls) { return }
+    if (-not $Path) { $Path = Join-Path $PSScriptRoot 'token-usage.csv' }
+
+    $row = [pscustomobject][ordered]@{
+        Date       = (Get-Date -Format 'yyyy-MM-dd HH:mm:ss')
+        Tache      = $Task
+        Modele     = $Model
+        Source     = $Source
+        Appels     = $l.Calls
+        Entree     = $l.Prompt
+        Generes    = $l.Completion
+        Total      = $l.Total
+        Secondes   = [Math]::Round($l.Seconds, 1)
+        Tronquees  = $l.Truncated
+        Note       = $Note
+    }
+    # Le fichier peut etre ouvert ailleurs au moment ou on ecrit. On abandonne
+    # la ligne plutot que de faire echouer un traitement deja termine.
+    try {
+        $exists = Test-Path $Path
+        $csv = $row | ConvertTo-Csv -NoTypeInformation
+        if ($exists) { $csv = $csv | Select-Object -Skip 1 }
+        Add-Content -Path $Path -Value $csv -Encoding UTF8 -ErrorAction Stop
+    }
+    catch {
+        Write-Host "  (journal de tokens non ecrit : $($_.Exception.Message))" -ForegroundColor DarkGray
+    }
+}
+
 function Invoke-LMStudioChat {
     <# Un aller-retour /v1/chat/completions. Retourne @{ Text; Tokens }. #>
     param(
@@ -315,9 +429,11 @@ function Invoke-LMStudioChat {
         max_tokens  = $MaxTokens
     } | ConvertTo-Json -Depth 5 -Compress
 
+    $callWatch = [System.Diagnostics.Stopwatch]::StartNew()
     $r = Invoke-RestMethod -Uri $Endpoint -Method Post `
             -ContentType "application/json; charset=utf-8" `
             -Body ([System.Text.Encoding]::UTF8.GetBytes($body)) -TimeoutSec 3600
+    $callWatch.Stop()
 
     $txt = $r.choices[0].message.content
     # Qwen3 peut emettre un bloc de raisonnement malgre /no_think
@@ -326,6 +442,19 @@ function Invoke-LMStudioChat {
     # finish_reason = "length" : la reponse a ete COUPEE par max_tokens. C'est la
     # seule facon de distinguer une omission du modele d'une troncature technique.
     $finish = $r.choices[0].finish_reason
+
+    # Lecture seule de ce que le serveur a deja renvoye : le suivi n'ajoute
+    # aucune requete et ne modifie pas ce qui est envoye au modele.
+    # Enferme dans un try : une comptabilite d'agrement n'a pas le droit de
+    # faire echouer une traduction, et ce bloc est sur le chemin de CHAQUE appel.
+    try {
+        Add-TokenLedgerEntry -Prompt ([int]$r.usage.prompt_tokens) `
+            -Completion ([int]$r.usage.completion_tokens) `
+            -Seconds $callWatch.Elapsed.TotalSeconds `
+            -WasTruncated:($finish -eq 'length')
+    }
+    catch { }
+
     @{
         Text        = $txt
         Tokens      = $r.usage.completion_tokens

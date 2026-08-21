@@ -45,6 +45,7 @@ if (-not $Model) { $Model = Get-DefaultModel }
 # Demarre le serveur et charge le modele si besoin : un script lance seul
 # ne doit pas echouer juste parce que LM Studio s'est arrete.
 Initialize-LMStudioSession -Model $Model -Endpoint $Endpoint -ContextLength $ContextLength
+Reset-TokenLedger -Label 'review'
 
 if ($Marks) {
     # gras et italique transportes sous forme de balises [[i]] / [[b]]
@@ -278,3 +279,5 @@ if ($badAfter.Count) {
 
 Write-Host "Revision : $Out" -ForegroundColor Yellow
 Write-Host "Rapport  : $ReportPath" -ForegroundColor Yellow
+Write-TokenSummary
+Write-TokenLog -Task 'revision' -Model $Model -Source $Source

@@ -28,3 +28,6 @@ _installers/
 # --- etats de travail locaux ---
 ETAT*.md
 README-LMStudio.md
+
+# --- journal de consommation, contient des chemins de travail ---
+token-usage.csv

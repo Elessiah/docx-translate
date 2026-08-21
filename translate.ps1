@@ -49,6 +49,7 @@ if (-not $Model) { $Model = Get-DefaultModel }
 # Demarre le serveur et charge le modele si besoin : un script lance seul
 # ne doit pas echouer juste parce que LM Studio s'est arrete.
 Initialize-LMStudioSession -Model $Model -Endpoint $Endpoint -ContextLength $ContextLength
+Reset-TokenLedger -Label 'translate'
 
 $item = Get-Item $Path
 if ($Marks -and $item.Extension.ToLower() -eq '.docx') {
@@ -278,3 +279,5 @@ if ($Review) {
     if ($ReviewOut)   { $revArgs.Out         = $ReviewOut }
     & "$PSScriptRoot\review.ps1" @revArgs
 }
+Write-TokenSummary
+Write-TokenLog -Task 'traduction' -Model $Model -Source $Path

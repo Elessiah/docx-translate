@@ -92,6 +92,29 @@ passage. C'est vous qui tranchez.
 | `proofread.ps1` | Corrige la langue du texte source, ou la signale sans rien reecrire (`-ReportOnly`) |
 | `format-deviantart.ps1` | Prépare le texte pour un éditeur web (une ligne vide entre paragraphes) |
 | `lib-lmstudio.ps1` | Fonctions communes — lecture `.docx`, découpage, réparations |
+| `stats.ps1` | Consommation cumulée des modèles locaux |
+
+### Suivre la consommation
+
+Chaque exécution ajoute une ligne à `token-usage.csv`. Rien à activer.
+
+```powershell
+.\stats.ps1
+```
+
+Totaux cumulés, répartition par tâche et par mois. Le journal est local et
+exclu du dépôt : il contient vos chemins de travail.
+
+Le comptage se contente de lire le champ `usage` que le serveur renvoie déjà
+dans chaque réponse — aucune requête supplémentaire, rien de changé dans ce qui
+est envoyé au modèle. L'enregistrement et l'écriture du journal sont enfermés
+dans des `try` : une comptabilité d'agrément n'a pas à faire échouer une
+traduction de quarante minutes parce que le CSV était ouvert dans Excel.
+
+Les tokens d'entrée sont comptés séparément des tokens générés, et l'écart
+surprend : en traitement paragraphe par paragraphe, le prompt système et la
+fiche de contexte repartent à chaque appel et pèsent plus lourd que tout ce que
+le modèle écrit.
 
 ---
 

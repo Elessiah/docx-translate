@@ -69,6 +69,7 @@ if (-not $Model) { $Model = Get-DefaultModel }
 # Demarre le serveur et charge le modele si besoin : un script lance seul
 # ne doit pas echouer juste parce que LM Studio s'est arrete.
 Initialize-LMStudioSession -Model $Model -Endpoint $Endpoint -ContextLength $ContextLength
+Reset-TokenLedger -Label 'proofread'
 
 $item = Get-Item $Path
 if ($ReportOnly) { $Marks = $false }
@@ -391,6 +392,9 @@ if ($ReportOnly) {
         Write-Host ("Ecartes faute de repere : {0}" -f $orphans.Count) -ForegroundColor DarkYellow
     }
     Write-Host "Rapport : $ReportPath" -ForegroundColor Yellow
+    Write-TokenSummary
+    Write-TokenLog -Task 'reperage' -Model $Model -Source $Path `
+        -Note "$Passes passe(s), $($found.Count) signalement(s)"
     return
 }
 
@@ -522,3 +526,5 @@ if ($mismatches.Count) {
 }
 Write-Host "Corrige : $Out" -ForegroundColor Yellow
 Write-Host "Rapport : $ReportPath" -ForegroundColor Yellow
+Write-TokenSummary
+Write-TokenLog -Task 'correction' -Model $Model -Source $Path
