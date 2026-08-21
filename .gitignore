@@ -24,6 +24,7 @@ LMStudio/
 lmstudio-data/
 lmstudio-appdata/
 _installers/
+tools/
 
 # --- etats de travail locaux ---
 ETAT*.md

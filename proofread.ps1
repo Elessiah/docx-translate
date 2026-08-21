@@ -58,6 +58,9 @@ param(
     [switch]$Marks,
     [switch]$Think,
     [switch]$ReportOnly,
+    [switch]$NoLanguageTool,
+    [switch]$NoModel,
+    [string]$LTEndpoint = "http://localhost:8081/v2",
     [switch]$ByBlock,
     [int]$Passes = 2
 )
@@ -66,10 +69,22 @@ $ErrorActionPreference = "Stop"
 . "$PSScriptRoot\lib-lmstudio.ps1"
 if (-not $Model) { $Model = Get-DefaultModel }
 
+# -NoModel : passe LanguageTool seul, en quelques secondes et sans charger
+# le modele. Utile pour une verification rapide, ou quand la machine sert a
+# autre chose. Reserve au mode reperage : sans modele il n'y a rien a corriger.
+if ($NoModel -and -not $ReportOnly) {
+    throw "-NoModel n'a de sens qu'avec -ReportOnly : sans modele, il n'y a pas de correction a produire."
+}
+if ($NoModel -and $NoLanguageTool) {
+    throw "-NoModel et -NoLanguageTool ensemble ne laissent que les detections mecaniques."
+}
+
 # Demarre le serveur et charge le modele si besoin : un script lance seul
 # ne doit pas echouer juste parce que LM Studio s'est arrete.
-Initialize-LMStudioSession -Model $Model -Endpoint $Endpoint -ContextLength $ContextLength
-Reset-TokenLedger -Label 'proofread'
+if (-not $NoModel) {
+    Initialize-LMStudioSession -Model $Model -Endpoint $Endpoint -ContextLength $ContextLength
+    Reset-TokenLedger -Label 'proofread'
+}
 
 $item = Get-Item $Path
 if ($ReportOnly) { $Marks = $false }
@@ -189,8 +204,14 @@ if ($ReportOnly) {
     Write-Host "Rapport  : $ReportPath" -ForegroundColor Cyan
     $grain = 'paragraphe par paragraphe'
     if ($ByBlock) { $grain = 'par blocs' }
-    Write-Host ("{0} mots, {1} paragraphes -> {2} unite(s) {3}, {4} passe(s)" -f `
-        (Measure-Words $raw), $paragraphs.Count, $units.Count, $grain, $Passes) -ForegroundColor Cyan
+    if ($NoModel) {
+        Write-Host ("{0} mots, {1} paragraphes -> LanguageTool seul, le modele n'est pas sollicite" -f `
+            (Measure-Words $raw), $paragraphs.Count) -ForegroundColor Cyan
+    }
+    else {
+        Write-Host ("{0} mots, {1} paragraphes -> {2} unite(s) {3}, {4} passe(s)" -f `
+            (Measure-Words $raw), $paragraphs.Count, $units.Count, $grain, $Passes) -ForegroundColor Cyan
+    }
     if ($ctx) { Write-Host ("Contexte : {0} mots" -f (Measure-Words $ctx)) -ForegroundColor Cyan }
     Write-Host "Aucun mot du texte ne sera modifie." -ForegroundColor DarkGray
     Write-Host ""
@@ -199,6 +220,7 @@ if ($ReportOnly) {
     $genTokens = 0
     $found = @(); $orphans = @(); $seen = @{}
 
+    if ($NoModel) { $units = @() }
     for ($i = 0; $i -lt $units.Count; $i++) {
         $u = $units[$i]
         $from = $u.From; $to = $u.To
@@ -274,6 +296,42 @@ if ($ReportOnly) {
         }
     }
 
+    # LanguageTool : des regles, pas un modele. Il ne connait pas l'histoire
+    # et rate tout ce qui demande de savoir qui parle, mais ce qu'il trouve,
+    # il le situe exactement : la position vient de l'outil, pas d'une
+    # citation qu'il faut retrouver dans le texte.
+    $ltCount = 0
+    if (-not $NoLanguageTool) {
+        $ltUp = Test-LanguageToolServer -Endpoint $LTEndpoint
+        if (-not $ltUp) {
+            Write-Host ""
+            Write-Host "LanguageTool : demarrage du serveur local..." -NoNewline -ForegroundColor DarkGray
+            $ltUp = Start-LanguageToolServer -Endpoint $LTEndpoint
+            if ($ltUp) { Write-Host " ok" -ForegroundColor DarkGray }
+            else { Write-Host " indisponible, on continue sans" -ForegroundColor DarkYellow }
+        }
+        if ($ltUp) {
+            try {
+                foreach ($m in (Invoke-LanguageToolCheck -Paragraphs $paragraphs -Endpoint $LTEndpoint)) {
+                    $key = "LT|$($m.Para)|$($m.Start)|$($m.Rule)"
+                    if ($seen.ContainsKey($key)) { continue }
+                    $seen[$key] = $true
+                    $found += @{
+                        Para = $m.Para; Start = $m.Start; Length = $m.Length
+                        Suggestion = $m.Suggestion; Reason = $m.Reason; Source = 'languagetool'
+                    }
+                    $ltCount++
+                }
+            }
+            finally {
+                # Le serveur ne survit pas au traitement : rien de ce projet
+                # ne doit rester en memoire une fois le travail fini.
+                Stop-LanguageToolServer
+            }
+            Write-Host ("LanguageTool : {0} signalement(s)" -f $ltCount) -ForegroundColor DarkGray
+        }
+    }
+
     # Ce qui se detecte sans modele se detecte mieux sans modele.
     foreach ($m in (Find-MechanicalIssues -Paragraphs $paragraphs)) {
         $key = "MECA|$($m.Para)|$($m.Start)|$($m.Reason)"
@@ -326,14 +384,21 @@ if ($ReportOnly) {
     $lines += ""
     $lines += "- Source : $Path"
     $lines += "- Date   : $(Get-Date -Format 'yyyy-MM-dd HH:mm')"
-    $lines += "- $($paragraphs.Count) paragraphes, $Passes passe(s), $($found.Count) signalement(s) avec repere"
+    $srcLabel = "modele local ($Passes passe(s)) + LanguageTool"
+    if ($NoModel)            { $srcLabel = "LanguageTool seul" }
+    elseif ($NoLanguageTool) { $srcLabel = "modele local seul ($Passes passe(s))" }
+    $lines += "- $($paragraphs.Count) paragraphes, $($found.Count) signalement(s) avec repere"
+    $lines += "- Source des signalements : $srcLabel"
     $lines += ""
     $lines += "**Aucun mot de ton texte n'a ete modifie.** Chaque entree donne une chaine"
     $lines += "verifiee presente dans le fichier : colle-la dans Ctrl+F pour tomber dessus."
     $lines += "Les signalements sont donnes dans l'ordre du texte."
     $lines += ""
-    $lines += "La colonne de droite est ce que le modele **propose**. Elle est souvent"
-    $lines += "fausse meme quand le repere est bon : sers-toi du repere, juge la correction."
+    $lines += "La colonne de droite est ce qui est **propose**. Pour les signalements du"
+    $lines += "modele elle est souvent fausse meme quand le repere est bon : sers-toi du"
+    $lines += "repere, juge la correction. Les entrees marquees (LanguageTool) viennent de"
+    $lines += "regles de grammaire et non d'un modele : leur position est exacte et leur"
+    $lines += "proposition est plus sure, mais elles ignorent tout de l'histoire."
     $lines += ""
 
     $lastPara = -1
@@ -348,7 +413,8 @@ if ($ReportOnly) {
         $excerpt = Get-AnchorExcerpt -Paragraph $p -Start $f.Start -Length $f.Length
 
         $head = $f.Reason
-        if ($f.Source -eq 'mecanique') { $head = $head + ' (detection mecanique)' }
+        if ($f.Source -eq 'mecanique')    { $head = $head + ' (detection mecanique)' }
+        if ($f.Source -eq 'languagetool') { $head = $head + ' (LanguageTool)' }
         if ($f.Suggestion) { $head = $head + '  ->  ' + $f.Suggestion }
 
         $lines += "**Ctrl+F** $BT$search$BT"
@@ -386,12 +452,15 @@ if ($ReportOnly) {
     Write-Host ""
     Write-Host ("Termine en {0:N0} s - {1} tokens" -f $sw.Elapsed.TotalSeconds, $genTokens) -ForegroundColor Yellow
     $meca = @($found | Where-Object { $_.Source -eq 'mecanique' }).Count
-    Write-Host ("Signalements avec repere : {0} dont {1} mecanique(s)" -f $found.Count, $meca) -ForegroundColor Yellow
+    $lt   = @($found | Where-Object { $_.Source -eq 'languagetool' }).Count
+    Write-Host ("Signalements avec repere : {0} - modele {1}, LanguageTool {2}, mecanique {3}" -f `
+        $found.Count, ($found.Count - $lt - $meca), $lt, $meca) -ForegroundColor Yellow
     if ($merged) { Write-Host ("Doublons fusionnes : {0}" -f $merged) -ForegroundColor DarkGray }
     if ($orphans.Count) {
         Write-Host ("Ecartes faute de repere : {0}" -f $orphans.Count) -ForegroundColor DarkYellow
     }
     Write-Host "Rapport : $ReportPath" -ForegroundColor Yellow
+    if ($NoModel) { return }
     Write-TokenSummary
     Write-TokenLog -Task 'reperage' -Model $Model -Source $Path `
         -Note "$Passes passe(s), $($found.Count) signalement(s)"

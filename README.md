@@ -81,6 +81,30 @@ Ne touche pas au fichier. Produit un `_reperage.md` : une liste de fautes
 possibles, chacune avec une chaine a coller dans Ctrl+F pour retrouver le
 passage. C'est vous qui tranchez.
 
+Deux moteurs alimentent ce rapport : le modèle local, et **LanguageTool**, un
+correcteur à base de règles qui tourne lui aussi sur la machine. Le second est
+utilisé par défaut ; `-NoLanguageTool` s'en passe.
+
+### La passe rapide, sans modèle
+
+```powershell
+.\languagetool.ps1 -Install       # une seule fois, environ 300 Mo
+.\proofread.ps1 -Path "mon-recit.docx" -ReportOnly -NoModel
+```
+
+LanguageTool seul : une trentaine de secondes pour un texte court, aucun modèle
+chargé, aucune carte graphique sollicitée. Il attrape les accords, la
+conjugaison et la ponctuation, et **rate** tout ce qui demande de comprendre
+l'histoire — le genre d'une narratrice, qui parle dans une incise.
+
+C'est la vérification qu'on lance en cours d'écriture. La passe complète avec le
+modèle reste pour la relecture finale.
+
+**Rien ne démarre avec Windows.** Aucun service n'est installé, aucune entrée
+n'est ajoutée au démarrage : le serveur est un `java.exe` lancé au début du
+contrôle et tué à la fin. `.\languagetool.ps1 -Status` le confirme, `-Stop`
+coupe un serveur resté en mémoire.
+
 ### Scripts individuels
 
 | Script | Rôle |
@@ -93,6 +117,7 @@ passage. C'est vous qui tranchez.
 | `format-deviantart.ps1` | Prépare le texte pour un éditeur web (une ligne vide entre paragraphes) |
 | `lib-lmstudio.ps1` | Fonctions communes — lecture `.docx`, découpage, réparations |
 | `stats.ps1` | Consommation cumulée des modèles locaux |
+| `languagetool.ps1` | Installe, démarre et arrête le correcteur local LanguageTool |
 
 ### Suivre la consommation
 
@@ -220,8 +245,34 @@ voisins fournis en lecture seule, et donner une **fiche de contexte** indiquant
 le genre des personnages et le temps du récit. Sans elle le modèle devine, et
 signale comme fautifs des accords corrects.
 
-Les corrections *proposées*, elles, restent souvent fausses. Le rapport le dit
-en tête : servez-vous du repère, jugez la correction.
+Les corrections *proposées*, elles, restent souvent fausses. Vérification sur
+un document entier de 36 paragraphes : 31 signalements, dont **zéro citation
+introuvable** — tous les repères tombaient juste. Mais le modèle a proposé trois
+fois une forme masculine pour une narratrice qu'il venait lui-même de décrire
+comme féminine dans son motif. Le repère est fiable, la correction ne l'est pas.
+Le rapport le dit en tête : servez-vous du repère, jugez la correction.
+
+### Deux moteurs qui ne ratent pas les mêmes choses
+
+LanguageTool applique des règles de grammaire. Il ne devine pas une position :
+il la **renvoie**. Aucun ancrage à reconstruire, aucune citation à vérifier —
+et donc aucune possibilité qu'un repère soit faux.
+
+Sur le même document de 36 paragraphes :
+
+| | Signalements | Durée | Position |
+|---|---|---|---|
+| Modèle local, 2 passes | 31 | 38 min | citation à retrouver, vérifiée par le code |
+| LanguageTool | 7 | 30 s | rendue par l'outil, exacte par construction |
+
+Les sept de LanguageTool étaient tous dans les trente-et-un du modèle : sur ce
+texte il n'apporte rien de neuf, il confirme vite. L'intérêt est ailleurs — ses
+sept-là sont les plus sûrs du lot, et ils coûtent trente secondes.
+
+Deux règles sont désactivées par défaut : celles qui restituent le `ne` de
+négation. `« je peux plus »`, `« j'ai pas »` sont des choix d'auteur dans un
+dialogue, pas des fautes — c'est exactement la correction que ce mode existe
+pour ne plus subir.
 
 ### API DeepL contre modèle local
 

@@ -1191,3 +1191,199 @@ function Join-Reasons {
     }
     $out -join ' / '
 }
+
+# ============================================================================
+#  LanguageTool : correcteur a base de regles, execute en local.
+#
+#  Complementaire du modele, pas concurrent. Il ne comprend pas l'histoire,
+#  donc il rate tout ce qui demande de savoir qui parle ou de quel genre est
+#  la narratrice. En echange il donne la position exacte de ce qu'il trouve,
+#  sans jamais rien reecrire, et en une seconde au lieu d'une demi-heure.
+#
+#  Le serveur ne tourne QUE pendant un controle. Rien n'est installe dans
+#  Windows, aucun service, rien au demarrage de la machine : c'est un java.exe
+#  lance a la demande et arrete des que le controle est fini.
+# ============================================================================
+
+$script:LTStartedByUs   = $false
+$script:LTServerProcess = $null
+
+# Regles ecartees par defaut. Deux motifs seulement :
+#   - la negation orale ("je peux plus", "j'ai pas") est un choix d'auteur,
+#     pas une faute ; c'est exactement la correction qu'on refuse de subir ;
+#   - le reste fait doublon avec ce que le rapport compte deja en masse, ou
+#     se declenche sur chaque tiret de dialogue et noierait le reste.
+$script:LTDefaultDisabled = @(
+    'NEGATION_PLUS', 'P_V_PAS', 'NE_MANQUANT', 'FR_NE_MANQUANT',
+    'UPPERCASE_SENTENCE_START',
+    'WHITESPACE_RULE', 'FRENCH_WHITESPACE', 'FRENCH_WHITESPACE_STRICT',
+    'APOS_TYP', 'TYPOGRAPHIC_APOSTROPHES', 'APOS_M'
+)
+
+function Get-LanguageToolInstall {
+    <# Cherche le serveur et son java dans tools\ a cote des scripts. A defaut
+       du java livre avec le projet, accepte celui du PATH s'il y en a un. #>
+    param([string]$Root)
+    if (-not $Root) { $Root = $PSScriptRoot }
+
+    $ltDir = Join-Path $Root 'tools\languagetool'
+    $jar   = Join-Path $ltDir 'languagetool-server.jar'
+    $java  = Join-Path $Root 'tools\jre\bin\java.exe'
+
+    if (-not (Test-Path $java)) {
+        $cmd = Get-Command java.exe -ErrorAction SilentlyContinue
+        if ($cmd) { $java = $cmd.Source } else { $java = $null }
+    }
+
+    @{
+        Dir  = $ltDir
+        Jar  = $jar
+        Java = $java
+        Ok   = ((Test-Path $jar) -and $java -and (Test-Path $java))
+    }
+}
+
+function Test-LanguageToolServer {
+    param([string]$Endpoint = 'http://localhost:8081/v2')
+    try {
+        $null = Invoke-RestMethod -Uri "$Endpoint/languages" -TimeoutSec 3 -ErrorAction Stop
+        return $true
+    }
+    catch { return $false }
+}
+
+function Start-LanguageToolServer {
+    <# Rend $true si un serveur repond a la fin, qu'on l'ait demarre ou non.
+       On note si c'est nous qui l'avons lance : on n'arretera que le notre. #>
+    param(
+        [string]$Endpoint = 'http://localhost:8081/v2',
+        [int]$TimeoutSeconds = 90
+    )
+    if (Test-LanguageToolServer -Endpoint $Endpoint) { return $true }
+
+    $inst = Get-LanguageToolInstall
+    if (-not $inst.Ok) { return $false }
+
+    $port = 8081
+    if ($Endpoint -match ':(\d+)') { $port = [int]$Matches[1] }
+
+    try {
+        $p = Start-Process -FilePath $inst.Java -PassThru -WindowStyle Hidden -WorkingDirectory $inst.Dir -ArgumentList @('-cp', 'languagetool-server.jar', 'org.languagetool.server.HTTPServer', '--port', "$port")
+    }
+    catch { return $false }
+
+    $script:LTServerProcess = $p
+    $sw = [System.Diagnostics.Stopwatch]::StartNew()
+    while ($sw.Elapsed.TotalSeconds -lt $TimeoutSeconds) {
+        Start-Sleep -Milliseconds 400
+        if (Test-LanguageToolServer -Endpoint $Endpoint) {
+            $script:LTStartedByUs = $true
+            return $true
+        }
+        if ($p.HasExited) { return $false }
+    }
+    return $false
+}
+
+function Stop-LanguageToolServer {
+    <# N'arrete que le serveur demarre par ce script : si un serveur tournait
+       deja pour autre chose, on ne le coupe pas. -Force passe outre. #>
+    param([switch]$Force)
+    if (-not $Force -and -not $script:LTStartedByUs) { return }
+    try {
+        if ($script:LTServerProcess -and -not $script:LTServerProcess.HasExited) {
+            Stop-Process -Id $script:LTServerProcess.Id -Force -ErrorAction Stop
+        }
+    }
+    catch { }
+    $script:LTStartedByUs   = $false
+    $script:LTServerProcess = $null
+}
+
+function ConvertTo-LanguageToolReason {
+    <# Ramene les categories de LanguageTool sur le vocabulaire du rapport,
+       pour que les deux sources se lisent de la meme facon.
+       Les categories francaises ne portent pas les memes noms que les
+       categories generiques (CAT_GRAMMAIRE, PONCTUATION_VIRGULE...), d'ou la
+       reconnaissance par motif. Une categorie inconnue garde son propre nom :
+       mieux vaut un libelle inhabituel qu'une information perdue. #>
+    param([string]$Category, [string]$Message)
+
+    $c = ''
+    switch -Regex ($Category) {
+        'HOMONYM|PARONYM|CONFUSED'          { $c = 'homophone';   break }
+        'AGREEMENT|ACCORD'                  { $c = 'accord';      break }
+        'CONJUGAISON'                       { $c = 'conjugaison'; break }
+        'GRAMMAIRE|^GRAMMAR'                { $c = 'grammaire';   break }
+        '^TYPOS|ORTHOGRAPH'                 { $c = 'orthographe'; break }
+        'PONCTUATION|^PUNCTUATION'          { $c = 'ponctuation'; break }
+        'MAJUSCULE|^CASING'                 { $c = 'majuscule';   break }
+        'TYPOGRAPH|INSECABLE|TRAITS_UNION'  { $c = 'typographie'; break }
+        'REPETITION|^REDUNDANCY'            { $c = 'repetition';  break }
+    }
+    if (-not $c) {
+        $c = ($Category -replace '^CAT_', '' -replace '_', ' ').ToLowerInvariant()
+        if (-not $c) { $c = 'doute' }
+    }
+
+    $m = ($Message -replace '\s+', ' ').Trim()
+    $c + ' : ' + $m
+}
+
+function Invoke-LanguageToolCheck {
+    <# Un envoi par paragraphe : les positions rendues sont alors directement
+       des index dans le paragraphe, sans recalcul et sans ancrage a verifier.
+       C'est toute la difference avec un modele : ici la position est donnee,
+       pas devinee. #>
+    param(
+        [Parameter(Mandatory)][string[]]$Paragraphs,
+        [string]$Endpoint = 'http://localhost:8081/v2',
+        [string]$Language = 'fr',
+        [string]$Level = 'picky',
+        [string[]]$DisabledRules
+    )
+    if ($null -eq $DisabledRules) { $DisabledRules = $script:LTDefaultDisabled }
+
+    $out = @()
+    for ($i = 0; $i -lt $Paragraphs.Count; $i++) {
+        $p = $Paragraphs[$i]
+        if (-not $p.Trim()) { continue }
+
+        # Tout est encode en pourcent ici : le corps envoye reste en ASCII pur,
+        # ce qui evite la question de l'encodage du body en PowerShell 5.1.
+        $body = 'language=' + [System.Uri]::EscapeDataString($Language) + '&level=' + [System.Uri]::EscapeDataString($Level) + '&text=' + [System.Uri]::EscapeDataString($p)
+        if ($DisabledRules -and $DisabledRules.Count) {
+            $body += '&disabledRules=' + [System.Uri]::EscapeDataString(($DisabledRules -join ','))
+        }
+
+        # LanguageTool repond en application/json SANS charset. PowerShell 5.1
+        # decode alors en Latin-1 et rend des accents doubles : on lit les
+        # octets bruts et on impose UTF-8 nous-memes.
+        try {
+            $w = Invoke-WebRequest -Uri "$Endpoint/check" -Method Post -Body $body -ContentType 'application/x-www-form-urlencoded' -UseBasicParsing -TimeoutSec 30 -ErrorAction Stop
+            $r = [System.Text.Encoding]::UTF8.GetString($w.RawContentStream.ToArray()) | ConvertFrom-Json
+        }
+        catch { continue }
+
+        foreach ($m in $r.matches) {
+            $start = [int]$m.offset
+            $len   = [int]$m.length
+            if ($start -lt 0 -or ($start + $len) -gt $p.Length) { continue }
+
+            $sug = ''
+            if ($m.replacements) {
+                $sug = (@($m.replacements | Select-Object -First 2 | ForEach-Object { $_.value }) -join ' / ')
+            }
+            $out += @{
+                Para       = $i
+                Start      = $start
+                Length     = $len
+                Fragment   = $p.Substring($start, $len)
+                Suggestion = $sug
+                Reason     = (ConvertTo-LanguageToolReason -Category $m.rule.category.id -Message $m.message)
+                Rule       = [string]$m.rule.id
+            }
+        }
+    }
+    , $out
+}
