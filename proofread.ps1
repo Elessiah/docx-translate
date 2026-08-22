@@ -495,6 +495,36 @@ if ($ReportOnly) {
     }
 
     $sw.Stop()
+    # Le modele rend parfois un signalement dont la correction est le fragment
+    # lui-meme, avec un motif du genre "correct mais peu naturel". Une ligne
+    # qui ne propose rien n'apprend rien : elle ne coute pas un oubli, elle
+    # coute une lecture. C'est le seul cas ou l'on retire sans hesiter.
+    $utiles = @()
+    foreach ($f in $found) {
+        if ($f.Suggestion) {
+            $frag = $paragraphs[$f.Para].Substring($f.Start, $f.Length)
+            $a = $frag.Trim()
+            $b = $f.Suggestion.Trim()
+
+            # Strictement identique : la ligne ne propose rien.
+            if ($a -ceq $b) { continue }
+
+            # Identique a la casse pres. Sur un fragment d'au moins trois
+            # mots, personne ne "corrige" une majuscule : c'est le modele
+            # qui a recopie le passage. Sur un mot seul en revanche,
+            # "brune" -> "Brune" est une vraie correction : on la garde.
+            $mots = @($a -split '\s+' | Where-Object { $_ })
+            if (($a -ieq $b) -and ($mots.Count -ge 3)) { continue }
+
+            # On ne va pas plus loin. Une difference d'espace insecable ou
+            # de ponctuation est invisible a l'oeil, mais c'est une vraie
+            # correction : l'ecarter serait l'oubli qu'on refuse.
+        }
+        $utiles += $f
+    }
+    $vides = $found.Count - $utiles.Count
+    $found = $utiles
+
     $found = @($found | Sort-Object @{ Expression = { $_.Para } }, @{ Expression = { $_.Start } })
 
     # Deux passes signalent souvent la meme faute avec un fragment plus ou moins
@@ -636,6 +666,7 @@ if ($ReportOnly) {
     Write-Host ("Signalements avec repere : {0} - modele {1}, narrateur {2}, LanguageTool {3}, mecanique {4}" -f `
         $found.Count, ($found.Count - $lt - $meca - $nar), $nar, $lt, $meca) -ForegroundColor Yellow
     if ($merged) { Write-Host ("Doublons fusionnes : {0}" -f $merged) -ForegroundColor DarkGray }
+    if ($vides) { Write-Host ("Sans proposition, ecartes : {0}" -f $vides) -ForegroundColor DarkGray }
     if ($orphans.Count) {
         Write-Host ("Ecartes faute de repere : {0}" -f $orphans.Count) -ForegroundColor DarkYellow
     }
