@@ -105,6 +105,49 @@ n'est ajoutée au démarrage : le serveur est un `java.exe` lancé au début du
 contrôle et tué à la fin. `.\languagetool.ps1 -Status` le confirme, `-Stop`
 coupe un serveur resté en mémoire.
 
+### Vérifier le genre du narrateur
+
+```powershell
+.\proofread.ps1 -Path "mon-recit.docx" -NarratorOnly -ContextFile "contexte.md"
+```
+
+Un récit à la première personne accorde des dizaines de participes et
+d'adjectifs sur un narrateur dont le genre n'apparaît nulle part dans la
+phrase. `Je suis sorti` est du français correct : aucun correcteur ne peut
+savoir que c'est faux.
+
+Ici le travail est coupé en deux. **Le code établit la liste des candidats** :
+tout mot du paragraphe dont la forme ne correspond pas au genre déclaré. Un
+désaccord ne peut donc pas passer inaperçu — il n'y a pas de lecture à faire,
+c'est de la morphologie. **Le modèle ne fait que trier** : pour chaque mot, il
+répond si celui-ci se rapporte au narrateur ou à quelqu'un d'autre.
+
+Il ne recopie aucun mot, donc il ne peut pas écorcher un accent. Il ne donne
+aucune position, puisqu'on les connaît déjà. Et la forme corrigée est calculée
+par règle, jamais écrite par lui.
+
+Un mot n'est écarté que si **toutes** les passes le rejettent, et les écartés
+sont listés en fin de rapport plutôt que jetés.
+
+Le genre est lu dans la fiche de contexte (`Narratrice : ...`, `Genre du
+narrateur : F`). Sans mention explicite, le script s'arrête au lieu de deviner.
+`-Narrator feminin` force la valeur.
+
+### Relire un texte dicté
+
+```powershell
+.\proofread.ps1 -Path "mon-recit.docx" -Dictation
+```
+
+Un texte dicté ne contient pas de fautes d'orthographe : le logiciel écrit
+toujours des mots corrects, mais pas toujours les bons. `sans` pour `s'en`,
+`ces` pour `ses`, un mot court avalé, un fragment répété, une commande de
+dictée restée dans le texte. Aucun correcteur ne les voit — il faut lire le
+sens.
+
+Cette passe cherche ça, et rien d'autre. Les commandes de dictée et les
+fragments répétés à l'identique sont détectés sans modèle.
+
 ### Scripts individuels
 
 | Script | Rôle |

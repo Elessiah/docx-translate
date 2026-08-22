@@ -1387,3 +1387,360 @@ function Invoke-LanguageToolCheck {
     }
     , $out
 }
+
+function Remove-Diacritics {
+    <# Enleve les accents sans toucher aux lettres. Sert partout ou l'on
+       compare des mots ecrits par le modele, qui accentue au hasard. #>
+    param([Parameter(Mandatory)][AllowEmptyString()][string]$Text)
+    if (-not $Text) { return '' }
+    $flat = $Text.Normalize([System.Text.NormalizationForm]::FormD)
+    $sb = New-Object System.Text.StringBuilder
+    foreach ($ch in $flat.ToCharArray()) {
+        if ([System.Globalization.CharUnicodeInfo]::GetUnicodeCategory($ch) -ne
+            [System.Globalization.UnicodeCategory]::NonSpacingMark) {
+            [void]$sb.Append($ch)
+        }
+    }
+    $sb.ToString()
+}
+
+# ============================================================================
+#  Accord avec le narrateur.
+#
+#  Repartition volontaire du travail : le modele DESIGNE, le code TRANCHE.
+#
+#  Decider quels mots se rapportent au narrateur demande de comprendre le
+#  texte : seul le modele sait le faire. Decider si "emmitoufle" est masculin
+#  ou feminin est de la morphologie : le code le fait sans se tromper et sans
+#  changer d'avis. On ne demande donc jamais au modele de proposer une forme -
+#  sur un document de 36 paragraphes il a motive trois fois par "narratrice
+#  femme" avant de suggerer un masculin.
+#
+#  Le fichier reste en ASCII pur : les lettres accentuees des formes proposees
+#  sont construites par code, jamais ecrites en clair.
+# ============================================================================
+
+$script:AccE = [string][char]0x00E9   # e accent aigu
+$script:AccG = [string][char]0x00E8   # e accent grave
+$script:AccC = [string][char]0x00E7   # c cedille
+$script:AccI = [string][char]0x00EE   # i circonflexe
+
+# Formes verbales de la 1e personne dont la terminaison imite un adjectif.
+# Sans cette liste, "je reponds" produirait "reponse".
+$script:VerbForms1P = @(
+    'suis', 'ai', 'vais', 'sais', 'fais', 'dis', 'mets', 'peux', 'veux',
+    'prends', 'reponds', 'attends', 'entends', 'vends', 'tends', 'descends',
+    'rends', 'perds', 'mords', 'sens', 'viens', 'tiens', 'reviens',
+    'deviens', 'obtiens', 'maintiens', 'soutiens',
+    'cours', 'sors', 'dors', 'pars', 'sers', 'meurs', 'souris',
+    'crois', 'vois', 'bois', 'dois', 'recois', 'ris', 'ecris', 'lis',
+    'connais', 'parais', 'plais', 'tais', 'nais', 'mens', 'sens',
+    'etais', 'avais', 'faisais', 'disais', 'voulais', 'pouvais', 'devais',
+    'serais', 'aurais', 'irais', 'ferais', 'dirais', 'voudrais', 'pourrais',
+    'es', 'est', 'as', 'a', 'vas', 'fus', 'eus'
+)
+
+# Mots-outils. Le modele n'est pas cense les citer, mais une regle de
+# morphologie appliquee a "mon" produit "monne" : on ferme la porte.
+$script:FunctionWords = @(
+    'rien', 'lui', 'moi', 'toi', 'soi', 'eux', 'mon', 'ton', 'son',
+    'mes', 'tes', 'ses', 'nos', 'vos', 'leur', 'leurs', 'des', 'les',
+    'ils', 'nous', 'vous', 'qui', 'quoi', 'dont', 'mais', 'donc', 'car',
+    'dans', 'sur', 'sous', 'vers', 'avec', 'sans', 'pour', 'par', 'chez',
+    'entre', 'apres', 'avant', 'depuis', 'pendant', 'cela', 'ceci', 'ces',
+    'cet', 'quel', 'quels', 'quand', 'comme', 'ici', 'puis', 'encore'
+)
+
+# Invariables en genre dont la terminaison imiterait un masculin.
+$script:GenderInvariable = @(
+    'mieux', 'pis', 'plus', 'moins', 'bien', 'mal', 'vite', 'ainsi',
+    'debout', 'ensemble', 'expres', 'tot', 'tard', 'trop', 'tres',
+    'tout', 'tous', 'chacun', 'meme', 'aussi', 'assez', 'jamais',
+    'toujours', 'parfois', 'soudain', 'enfin', 'alors', 'depuis'
+)
+
+function Get-FeminineIrregular {
+    <# Table des feminins que les regles generales rateraient. Construite en
+       fonction pour que les accents restent hors du source. #>
+    $t = @{}
+    $t['faux']    = 'fausse';   $t['doux']   = 'douce'
+    $t['roux']    = 'rousse';   $t['vieux']  = 'vieille'
+    $t['beau']    = 'belle';    $t['nouveau']= 'nouvelle'
+    $t['fou']     = 'folle';    $t['mou']    = 'molle'
+    $t['blanc']   = 'blanche';  $t['franc']  = 'franche'
+    $t['sec']     = 's' + $script:AccG + 'che'
+    $t['public']  = 'publique'; $t['long']   = 'longue'
+    $t['frais']   = 'fra' + $script:AccI + 'che'
+    $t['favori']  = 'favorite'; $t['gentil'] = 'gentille'
+    $t['nul']     = 'nulle';    $t['bas']    = 'basse'
+    $t['gros']    = 'grosse'
+    $t['epais']   = $script:AccE + 'paisse'
+    $t['las']     = 'lasse';    $t['gras']   = 'grasse'
+    $t['metis']   = 'm' + $script:AccE + 'tisse'
+    $t['complet'] = 'compl' + $script:AccG + 'te'
+    $t['secret']  = 's' + $script:AccE + 'cr' + $script:AccG + 'te'
+    $t['inquiet'] = 'inqui' + $script:AccG + 'te'
+    $t['discret'] = 'discr' + $script:AccG + 'te'
+    $t['concret'] = 'concr' + $script:AccG + 'te'
+    $t['sot']     = 'sotte';    $t['idiot']  = 'idiote'
+    $t['mort']    = 'morte';    $t['malin']  = 'maligne'
+    $t['benin']   = 'b' + $script:AccE + 'nigne'
+    $t['fier']    = 'fi' + $script:AccG + 're'
+    $t['tiers']   = 'tierce'
+    $t['pret']    = 'pr' + [string][char]0x00EA + 'te'
+    # -teur fait -teuse par defaut ; ceux-ci font -trice.
+    foreach ($n in @('acteur', 'directeur', 'lecteur', 'spectateur',
+                     'createur', 'auteur', 'narrateur', 'seducteur',
+                     'conducteur', 'instituteur', 'protecteur',
+                     'inspecteur', 'traducteur', 'animateur',
+                     'observateur', 'organisateur', 'formateur')) {
+        $t[$n] = ($n -replace 'teur$', 'trice')
+    }
+    $t
+}
+$script:FeminineIrregular = Get-FeminineIrregular
+
+function Restore-WordCase {
+    <# Rend $Value avec la casse de $Model : le rapport cite le mot tel qu'il
+       apparait dans le texte, majuscule comprise. #>
+    param([Parameter(Mandatory)][string]$Model, [Parameter(Mandatory)][string]$Value)
+    if ($Model -cmatch '^\p{Lu}') {
+        return ($Value.Substring(0, 1).ToUpperInvariant() + $Value.Substring(1))
+    }
+    $Value
+}
+
+function Get-FeminineForm {
+    <# Forme feminine d'un mot masculin, ou chaine vide quand il n'y a rien a
+       dire : mot deja feminin, invariable en genre, ou forme verbale. Le
+       silence est le comportement par defaut : on ne signale que du sur.
+
+       Les motifs sont testes sur la version SANS accent, mais la forme rendue
+       est construite sur le mot d'origine : "emmitoufle" finit par un e accent
+       aigu, qu'aucune classe de caracteres ASCII ne reconnait. #>
+    param([Parameter(Mandatory)][AllowEmptyString()][string]$Word)
+
+    $w = $Word.Trim()
+    if (-not $w) { return '' }
+    if ($w -notmatch '^\p{L}+$') { return '' }
+
+    $lower = $w.ToLowerInvariant()
+    $plain = (Remove-Diacritics -Text $lower)
+
+    # Un mot de deux lettres n'est jamais une cible d'accord qui vaille
+    # un signalement - sauf "nu", qui en est une vraie.
+    if ($plain.Length -lt 3 -and $plain -ne 'nu')  { return '' }
+    if ($script:VerbForms1P -contains $plain)      { return '' }
+    if ($script:GenderInvariable -contains $plain) { return '' }
+    if ($script:FunctionWords -contains $plain)    { return '' }
+
+    # Deja feminin, ou epicene : presque tout ce qui finit par un e non
+    # accentue l'est. "emmitouflee", "calme", "triste", "assise", "fiere".
+    if ($lower -match 'e$' -or $lower -match 'es$') { return '' }
+
+    if ($script:FeminineIrregular.ContainsKey($plain)) {
+        return (Restore-WordCase -Model $w -Value $script:FeminineIrregular[$plain])
+    }
+
+    $fem = ''
+    switch -Regex ($plain) {
+        'eur$'   { $fem = $lower -replace '(?i)eur$',  'euse';  break }
+        'eux$'   { $fem = $lower -replace '(?i)eux$',  'euse';  break }
+        'if$'    { $fem = $lower -replace '(?i)if$',   'ive';   break }
+        'er$'    { $fem = $lower -replace '(?i)er$',   ($script:AccG + 're'); break }
+        'ien$'   { $fem = $lower + 'ne';  break }
+        'on$'    { $fem = $lower + 'ne';  break }
+        'el$'    { $fem = $lower + 'le';  break }
+        'eil$'   { $fem = $lower + 'le';  break }
+        'et$'    { $fem = $lower + 'te';  break }
+        'x$'     { $fem = $lower -replace '(?i)x$', 'se'; break }
+        # Participes, adjectifs et noms ordinaires : le gros du contingent.
+        # Le test porte sur $plain, donc un e accentue final compte comme e.
+        default  {
+            if ($plain -match '(e|i|u|t|d|l|n|r|c|s)$') { $fem = $lower + 'e' }
+        }
+    }
+
+    if (-not $fem -or $fem -eq $lower) { return '' }
+    Restore-WordCase -Model $w -Value $fem
+}
+
+function Get-MasculineForm {
+    <# Chemin inverse, volontairement plus prudent : on ne retire une marque
+       de feminin que la ou la regle ne laisse pas de place au doute. #>
+    param([Parameter(Mandatory)][AllowEmptyString()][string]$Word)
+
+    $w = $Word.Trim()
+    if (-not $w -or $w -notmatch '^\p{L}+$') { return '' }
+    $lower = $w.ToLowerInvariant()
+    $plain = (Remove-Diacritics -Text $lower)
+    if ($plain.Length -lt 3)                    { return '' }
+    if ($script:VerbForms1P -contains $plain)   { return '' }
+    if ($script:FunctionWords -contains $plain) { return '' }
+
+    $masc = ''
+    switch -Regex ($plain) {
+        'trice$' { $masc = $lower -replace '(?i)trice$', 'teur'; break }
+        'euse$'  { $masc = $lower -replace '(?i)euse$',  'eux';  break }
+        'ienne$' { $masc = $lower -replace '(?i)ienne$', 'ien';  break }
+        'onne$'  { $masc = $lower -replace '(?i)onne$',  'on';   break }
+        'ette$'  { $masc = $lower -replace '(?i)ette$',  'et';   break }
+        'elle$'  { $masc = $lower -replace '(?i)elle$',  'el';   break }
+        'ive$'   { $masc = $lower -replace '(?i)ive$',   'if';   break }
+        'ee$'    { $masc = $lower.Substring(0, $lower.Length - 1); break }
+        'ie$'    { $masc = $lower.Substring(0, $lower.Length - 1); break }
+        'ue$'    { $masc = $lower.Substring(0, $lower.Length - 1); break }
+        default  { return '' }
+    }
+    if (-not $masc -or $masc -eq $lower) { return '' }
+    Restore-WordCase -Model $w -Value $masc
+}
+
+function Test-NarratorAgreement {
+    <# Verdict sur un mot designe par le modele, connaissant le genre du
+       narrateur. Rend @{ Mismatch; Expected; Why }.
+
+       Mismatch faux ne veut pas dire "correct" : le plus souvent cela veut
+       dire "rien de verifiable ici". La difference compte, et c'est pour
+       cela qu'on ne rend jamais un simple booleen sans motif. #>
+    param(
+        [Parameter(Mandatory)][AllowEmptyString()][string]$Word,
+        [Parameter(Mandatory)][ValidateSet('feminin', 'masculin')][string]$Gender
+    )
+
+    $none = @{ Mismatch = $false; Expected = ''; Why = '' }
+    $w = $Word.Trim()
+    if (-not $w) { return $none }
+
+    if ($Gender -eq 'feminin') {
+        # Une forme feminine existe et differe : le mot est donc au masculin.
+        $fem = Get-FeminineForm -Word $w
+        if (-not $fem) { return $none }
+        return @{
+            Mismatch = $true
+            Expected = $fem
+            Why      = 'accord narrateur : forme masculine, narratrice au feminin'
+        }
+    }
+
+    $masc = Get-MasculineForm -Word $w
+    if (-not $masc) { return $none }
+    @{
+        Mismatch = $true
+        Expected = $masc
+        Why      = 'accord narrateur : forme feminine, narrateur au masculin'
+    }
+}
+
+function Resolve-NarratorGender {
+    <# Cherche le genre du narrateur dans la fiche de contexte. On ne devine
+       pas : sans mention explicite on rend une chaine vide, et l'appelant
+       demandera. Lancer un controle d'accord sur un genre suppose ferait
+       exactement les degats qu'on cherche a eviter. #>
+    param([Parameter(Mandatory)][AllowEmptyString()][string]$Context)
+    if (-not $Context) { return '' }
+    $c = (Remove-Diacritics -Text $Context).ToLowerInvariant()
+
+    if ($c -match 'narrat\w*\s*:?\s*(une\s+)?(femme|feminin|fille)')  { return 'feminin' }
+    if ($c -match 'narrat\w*\s*:?\s*(un\s+)?(homme|masculin|garcon)') { return 'masculin' }
+    if ($c -match 'genre\s*(du|de la)?\s*narrat\w*\s*:?\s*f')         { return 'feminin' }
+    if ($c -match 'genre\s*(du|de la)?\s*narrat\w*\s*:?\s*(m|h)')     { return 'masculin' }
+    if ($c -match '\bnarratrice\b')                                   { return 'feminin' }
+    if ($c -match 'narrat\w*\s+(est\s+)?(une\s+)?femme')              { return 'feminin' }
+    if ($c -match 'narrat\w*\s+(est\s+)?(un\s+)?homme')               { return 'masculin' }
+    ''
+}
+
+# ============================================================================
+#  Artefacts de dictee vocale.
+#
+#  Un texte dicte ne contient pas de fautes d'orthographe : le logiciel ecrit
+#  toujours des mots corrects. Ce qu'il produit, ce sont des mots JUSTES au
+#  mauvais endroit. Deux familles se reperent sans modele, et celles-la
+#  n'ont aucune raison d'etre confiees a un modele.
+# ============================================================================
+
+function Find-DictationArtifacts {
+    <# Ce qu'une dictee laisse derriere elle et qu'une regexp voit mieux qu'un
+       modele : les commandes de dictee restees dans le texte, et les
+       fragments dits deux fois de suite. #>
+    param([Parameter(Mandatory)][string[]]$Paragraphs)
+
+    # Commandes de dictee. Uniquement les formules a plusieurs mots : "virgule"
+    # ou "point" seuls sont des mots ordinaires du francais et les signaler
+    # noierait le rapport.
+    $commands = @(
+        'nouveau paragraphe', 'nouvelle ligne', 'a la ligne',
+        'retour a la ligne', 'point final', 'point virgule',
+        'point d.interrogation', 'point d.exclamation',
+        'ouvrez les guillemets', 'fermez les guillemets',
+        'ouvrir les guillemets', 'fermer les guillemets',
+        'entre parentheses', 'nouveau chapitre'
+    )
+
+    $out = @()
+    for ($i = 0; $i -lt $Paragraphs.Count; $i++) {
+        $p = $Paragraphs[$i]
+        $flat = Remove-Diacritics -Text $p
+
+        foreach ($c in $commands) {
+            foreach ($m in [regex]::Matches($flat, '\b' + $c + '\b', 'IgnoreCase')) {
+                # Les index de la version sans accents coincident avec ceux du
+                # texte : enlever un accent ne change pas le nombre de lettres.
+                $out += @{
+                    Para = $i; Start = $m.Index; Length = $m.Length
+                    Fragment = $p.Substring($m.Index, $m.Length)
+                    Suggestion = ''
+                    Reason = 'commande : formule de dictee restee dans le texte'
+                }
+            }
+        }
+
+        # Fragment repete a l'identique juste apres lui-meme, trois mots ou
+        # plus. En dessous de trois, la repetition peut etre un effet de style.
+        $rx = '\b((?:\p{L}[\p{L}' + [char]0x2019 + "'" + ']*(?:\s+|$)){3,8})\1'
+        foreach ($m in [regex]::Matches($p, $rx, 'IgnoreCase')) {
+            $out += @{
+                Para = $i; Start = $m.Index; Length = $m.Length
+                Fragment = $m.Value
+                Suggestion = $m.Groups[1].Value.Trim()
+                Reason = 'repetition : le meme fragment est dit deux fois de suite'
+            }
+        }
+    }
+    , $out
+}
+
+function Get-NarratorCandidates {
+    <# Tous les mots d'un paragraphe dont la forme ne correspond PAS au genre
+       du narrateur. C'est la liste des fautes possibles, etablie par la seule
+       morphologie : si un mot n'y est pas, il ne peut pas etre un desaccord.
+
+       La recall ne depend donc plus du modele. Il ne lui restera qu'a dire,
+       pour chacun, s'il se rapporte au narrateur ou a quelqu'un d'autre -
+       une question fermee, la seule qu'il traite de facon fiable. #>
+    param(
+        [Parameter(Mandatory)][string]$Paragraph,
+        [Parameter(Mandatory)][ValidateSet('feminin', 'masculin')][string]$Gender
+    )
+
+    $out = @()
+    foreach ($m in [regex]::Matches($Paragraph, '\p{L}+')) {
+        $w = $m.Value
+        # Les adverbes en -ment ne s'accordent jamais : autant ne pas les
+        # soumettre au modele, chaque candidat en trop est du bruit.
+        if ((Remove-Diacritics -Text $w.ToLowerInvariant()) -match 'ment$') { continue }
+
+        $verdict = Test-NarratorAgreement -Word $w -Gender $Gender
+        if (-not $verdict.Mismatch) { continue }
+
+        $out += @{
+            Word     = $w
+            Start    = $m.Index
+            Length   = $m.Length
+            Expected = $verdict.Expected
+            Why      = $verdict.Why
+        }
+    }
+    , $out
+}

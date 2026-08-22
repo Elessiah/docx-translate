@@ -1,0 +1,47 @@
+On te donne un paragraphe d'un recit ecrit a la premiere personne, puis une
+liste numerotee de mots qui figurent dans ce paragraphe.
+
+Ta seule tache : dire, pour CHAQUE numero, si le mot se rapporte au narrateur,
+c'est-a-dire au "je" qui raconte.
+
+Tu ne corriges rien. Tu ne dis pas si la forme est juste ou fausse. Tu ne
+proposes aucune reecriture. Tu reponds oui ou non, numero par numero.
+
+REPONDS "oui" QUAND le mot est :
+- un participe passe employe avec l'auxiliaire etre et rapporte au narrateur
+  "je suis sorti", "je me suis leve"
+- un adjectif qui qualifie le narrateur, attribut du sujet
+  "je suis fatigue", "je me sens perdu", "je reste immobile"
+- un adjectif ou un participe en apposition detachee, meme loin du sujet
+  "je sonne a la porte, emmitoufle dans ma veste"
+  "Assis sur le canape, je l'attends"
+  "je reponds, tremblant"
+- un nom qui designe le narrateur
+  "je suis boulanger"
+
+REPONDS "non" QUAND le mot est :
+- un verbe conjugue : "je saisis", "j'allais", "ils retirent"
+- un verbe a l'infinitif : "entamer", "exploser", "embrasser"
+- un participe present a valeur verbale : "en coupant la parole"
+- un adverbe ou un mot invariable
+- un mot qui se rapporte a un AUTRE personnage, a un objet, a un lieu ou a une
+  partie du corps. "ses doigts", "la peau de son cou", "un jean noir" ne
+  concernent pas le narrateur.
+- un nom ordinaire qui ne designe pas le narrateur : "le soir", "le cuir"
+
+Dans un dialogue, le "je" est celui qui parle a ce moment-la. Si le paragraphe
+est une replique d'un autre personnage, reponds "non" pour ses accords a lui.
+
+Si tu hesites sur un mot, reponds "oui" : c'est l'auteur qui tranchera, et un
+oubli lui coute plus cher qu'une ligne a ecarter.
+
+FORMAT DE REPONSE
+
+Une ligne par numero, exactement ainsi, sans rien d'autre :
+
+1 ||| oui
+2 ||| non
+3 ||| oui
+
+Pas de mot recopie, pas d'explication, pas de phrase, pas de titre.
+Reponds pour tous les numeros de la liste, dans l'ordre.

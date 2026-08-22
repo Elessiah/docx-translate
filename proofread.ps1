@@ -60,6 +60,9 @@ param(
     [switch]$ReportOnly,
     [switch]$NoLanguageTool,
     [switch]$NoModel,
+    [ValidateSet('', 'feminin', 'masculin')][string]$Narrator = '',
+    [switch]$NarratorOnly,
+    [switch]$Dictation,
     [string]$LTEndpoint = "http://localhost:8081/v2",
     [switch]$ByBlock,
     [int]$Passes = 2
@@ -72,6 +75,11 @@ if (-not $Model) { $Model = Get-DefaultModel }
 # -NoModel : passe LanguageTool seul, en quelques secondes et sans charger
 # le modele. Utile pour une verification rapide, ou quand la machine sert a
 # autre chose. Reserve au mode reperage : sans modele il n'y a rien a corriger.
+if ($NarratorOnly) { $ReportOnly = $true }
+if ($Dictation)    { $ReportOnly = $true }
+if ($NarratorOnly -and $NoModel) {
+    throw "-NarratorOnly a besoin du modele : lui seul sait quels mots se rapportent au narrateur."
+}
 if ($NoModel -and -not $ReportOnly) {
     throw "-NoModel n'a de sens qu'avec -ReportOnly : sans modele, il n'y a pas de correction a produire."
 }
@@ -114,6 +122,11 @@ if ($ReportOnly -and -not $PSBoundParameters.ContainsKey('Think')) { $Think = $t
 
 $promptName = 'proofread'
 if ($ReportOnly) { $promptName = 'proofread-signal' }
+# Un texte dicte ne contient pas de fautes d'orthographe : le logiciel
+# ecrit toujours des mots corrects, mais pas toujours les bons. Chercher
+# cela demande de lire le sens, pas la forme : autre consigne, meme
+# machinerie de reperage.
+if ($Dictation)  { $promptName = 'proofread-dictee' }
 $systemPrompt = Get-PromptText -Name $promptName -PromptFile $PromptFile
 
 if ($Marks) {
@@ -220,7 +233,7 @@ if ($ReportOnly) {
     $genTokens = 0
     $found = @(); $orphans = @(); $seen = @{}
 
-    if ($NoModel) { $units = @() }
+    if ($NoModel -or $NarratorOnly) { $units = @() }
     for ($i = 0; $i -lt $units.Count; $i++) {
         $u = $units[$i]
         $from = $u.From; $to = $u.To
@@ -296,6 +309,132 @@ if ($ReportOnly) {
         }
     }
 
+    # ------------------------------------------------ accord avec le narrateur
+    # Le code PROPOSE, le modele ECARTE - et il n'ecarte rien pour de bon.
+    #
+    # Les candidats sortent de la morphologie : tout mot du paragraphe dont la
+    # forme ne correspond pas au genre du narrateur. Un desaccord ne peut donc
+    # pas etre manque par distraction, il n'y a pas de lecture a faire.
+    #
+    # Le modele repond seulement, numero par numero, si le mot se rapporte au
+    # narrateur ou a quelqu'un d'autre. Il ne recopie aucun mot - donc il ne
+    # peut pas ecorcher un accent - et il ne donne aucune position, puisqu'on
+    # les connait deja.
+    #
+    # Un "non" ne supprime rien : le signalement passe dans une seconde liste,
+    # plus courte a survoler. Une reponse absente, illisible, ou un appel en
+    # echec valent "oui". A choisir, on prefere une ligne de trop a un oubli.
+    $narCount = 0
+    $narAside = @()
+    $narGender = $Narrator
+    if (-not $narGender -and $NarratorOnly) {
+        $narGender = Resolve-NarratorGender -Context $ctx
+        if ($narGender) {
+            Write-Host ("Genre du narrateur lu dans la fiche : {0}" -f $narGender) -ForegroundColor DarkGray
+        }
+        else {
+            throw ("Le genre du narrateur est introuvable dans la fiche de contexte. " +
+                   "Ajoutez une ligne 'Narratrice : ...' ou 'Genre du narrateur : F', " +
+                   "ou passez -Narrator feminin.")
+        }
+    }
+
+    if ($narGender) {
+        Write-Host ""
+        Write-Host ("Accord narrateur ({0}) : {1} paragraphe(s)" -f $narGender, $paragraphs.Count) -ForegroundColor Cyan
+
+        $narPrompt = Get-PromptText -Name 'proofread-narrateur' -PromptFile $PromptFile
+        if ($ctx) {
+            $narPrompt += "`n`nFICHE DE CONTEXTE (pour savoir qui est qui) :`n---`n$ctx`n---`n" +
+                          "Ne t'en sers que pour reconnaitre le narrateur et les personnages."
+        }
+
+        for ($p = 0; $p -lt $paragraphs.Count; $p++) {
+            $para  = $paragraphs[$p]
+            # Sans @() : la fonction rend deja un tableau, l enrober le
+            # transformerait en un seul objet.
+            $cands = Get-NarratorCandidates -Paragraph $para -Gender $narGender
+
+            Write-Host ("[{0}/{1}] paragraphe {2}..." -f ($p + 1), $paragraphs.Count, ($p + 1)) -NoNewline
+            if (-not $cands.Count) {
+                Write-Host " rien a verifier" -ForegroundColor DarkGray
+                continue
+            }
+
+            # Par defaut tout est retenu. Le modele ne fait que retirer, et
+            # il faut que TOUTES les passes soient d'accord pour retirer :
+            # un seul "oui" suffit a garder le mot. C'est l'union des passes,
+            # pas leur intersection - on prefere une ligne de trop a un oubli.
+            $verdicts = @{}
+            $nbNon    = @{}
+            $nbRep    = @{}
+            for ($k = 0; $k -lt $cands.Count; $k++) {
+                $verdicts[$k] = $true; $nbNon[$k] = 0; $nbRep[$k] = 0
+            }
+
+            $liste = @()
+            for ($k = 0; $k -lt $cands.Count; $k++) {
+                $liste += ("{0}. {1}" -f ($k + 1), $cands[$k].Word)
+            }
+            $msg = "PARAGRAPHE :`n---`n" + $para + "`n---`n`n" +
+                   "MOTS A CLASSER :`n" + ($liste -join "`n")
+
+            for ($pass = 1; $pass -le $Passes; $pass++) {
+                $temp = $Temperature + (0.15 * ($pass - 1))
+                try {
+                    $r = Invoke-LMStudioChat -System $narPrompt -User $msg -Model $Model `
+                            -Endpoint $Endpoint -Temperature $temp -Think:$Think -MaxTokens 512
+                    $genTokens += $r.Tokens
+
+                    foreach ($line in ($r.Text -split '\r?\n')) {
+                        if ($line -notmatch '(\d+)\s*\|\|\|\s*(oui|non)') { continue }
+                        $idx = [int]$Matches[1] - 1
+                        if ($idx -lt 0 -or $idx -ge $cands.Count) { continue }
+                        $nbRep[$idx] = $nbRep[$idx] + 1
+                        if ($Matches[2] -ne 'oui') { $nbNon[$idx] = $nbNon[$idx] + 1 }
+                    }
+                }
+                catch {
+                    # Appel en echec : on ne perd aucun candidat.
+                    Write-Host " (modele indisponible, tout retenu)" -NoNewline -ForegroundColor DarkYellow
+                }
+            }
+
+            for ($k = 0; $k -lt $cands.Count; $k++) {
+                # Ecarte seulement si le modele a repondu ET n'a jamais dit oui.
+                if ($nbRep[$k] -gt 0 -and $nbNon[$k] -eq $nbRep[$k]) { $verdicts[$k] = $false }
+            }
+
+            $kept = 0; $aside = 0
+            for ($k = 0; $k -lt $cands.Count; $k++) {
+                $c = $cands[$k]
+                if ($verdicts[$k]) {
+                    $key = "NAR|$p|$($c.Start)"
+                    if ($seen.ContainsKey($key)) { continue }
+                    $seen[$key] = $true
+                    $found += @{
+                        Para = $p; Start = $c.Start; Length = $c.Length
+                        Suggestion = $c.Expected; Reason = $c.Why
+                        Source = 'narrateur'
+                    }
+                    $narCount++
+                    $kept++
+                }
+                else {
+                    $narAside += @{ Para = $p; Word = $c.Word; Expected = $c.Expected }
+                    $aside++
+                }
+            }
+
+            if ($kept) {
+                Write-Host (" {0} retenu(s) sur {1}" -f $kept, $cands.Count) -ForegroundColor Green
+            }
+            else {
+                Write-Host (" rien ({0} candidat(s) ecarte(s))" -f $aside) -ForegroundColor DarkGray
+            }
+        }
+    }
+
     # LanguageTool : des regles, pas un modele. Il ne connait pas l'histoire
     # et rate tout ce qui demande de savoir qui parle, mais ce qu'il trouve,
     # il le situe exactement : la position vient de l'outil, pas d'une
@@ -329,6 +468,18 @@ if ($ReportOnly) {
                 Stop-LanguageToolServer
             }
             Write-Host ("LanguageTool : {0} signalement(s)" -f $ltCount) -ForegroundColor DarkGray
+        }
+    }
+
+    if ($Dictation) {
+        foreach ($m in (Find-DictationArtifacts -Paragraphs $paragraphs)) {
+            $key = "DICT|$($m.Para)|$($m.Start)"
+            if ($seen.ContainsKey($key)) { continue }
+            $seen[$key] = $true
+            $found += @{
+                Para = $m.Para; Start = $m.Start; Length = $m.Length
+                Suggestion = $m.Suggestion; Reason = $m.Reason; Source = 'mecanique'
+            }
         }
     }
 
@@ -380,11 +531,16 @@ if ($ReportOnly) {
 
     $BT = [string][char]0x60
     $lines = @()
-    $lines += "# Reperage de fautes - francais"
+    $titre = "# Reperage de fautes - francais"
+    if ($Dictation)    { $titre = "# Reperage de bizarreries - texte dicte" }
+    if ($NarratorOnly) { $titre = "# Reperage d'accords - genre du narrateur" }
+    $lines += $titre
     $lines += ""
     $lines += "- Source : $Path"
     $lines += "- Date   : $(Get-Date -Format 'yyyy-MM-dd HH:mm')"
     $srcLabel = "modele local ($Passes passe(s)) + LanguageTool"
+    if ($Dictation)    { $srcLabel = "modele local, consigne dictee ($Passes passe(s))" }
+    if ($NarratorOnly) { $srcLabel = "candidats par morphologie, tri par le modele ($Passes passe(s))" }
     if ($NoModel)            { $srcLabel = "LanguageTool seul" }
     elseif ($NoLanguageTool) { $srcLabel = "modele local seul ($Passes passe(s))" }
     $lines += "- $($paragraphs.Count) paragraphes, $($found.Count) signalement(s) avec repere"
@@ -394,6 +550,12 @@ if ($ReportOnly) {
     $lines += "verifiee presente dans le fichier : colle-la dans Ctrl+F pour tomber dessus."
     $lines += "Les signalements sont donnes dans l'ordre du texte."
     $lines += ""
+    if ($NarratorOnly) {
+        $lines += "La forme proposee ici est calculee par regle de morphologie, pas ecrite"
+        $lines += "par le modele : elle est fiable. Ce qui reste incertain, c'est de savoir"
+        $lines += "si le mot se rapporte bien au narrateur - c'est la que tu tranches."
+        $lines += ""
+    }
     $lines += "La colonne de droite est ce qui est **propose**. Pour les signalements du"
     $lines += "modele elle est souvent fausse meme quand le repere est bon : sers-toi du"
     $lines += "repere, juge la correction. Les entrees marquees (LanguageTool) viennent de"
@@ -415,6 +577,7 @@ if ($ReportOnly) {
         $head = $f.Reason
         if ($f.Source -eq 'mecanique')    { $head = $head + ' (detection mecanique)' }
         if ($f.Source -eq 'languagetool') { $head = $head + ' (LanguageTool)' }
+        if ($f.Source -eq 'narrateur')    { $head = $head + ' (forme verifiee par le code)' }
         if ($f.Suggestion) { $head = $head + '  ->  ' + $f.Suggestion }
 
         $lines += "**Ctrl+F** $BT$search$BT"
@@ -436,6 +599,22 @@ if ($ReportOnly) {
         $lines += ""
     }
 
+    if ($narAside -and $narAside.Count) {
+        $lines += "## Accords ecartes par le modele ($($narAside.Count))"
+        $lines += ""
+        $lines += "Ces mots ont la forme d'un desaccord, mais le modele estime qu'ils ne se"
+        $lines += "rapportent pas au narrateur : verbes, mots designant un autre personnage."
+        $lines += "Ils sont listes ici plutot que jetes - un survol suffit a rattraper une"
+        $lines += "erreur de tri."
+        $lines += ""
+        $byPara = $narAside | Group-Object { $_.Para } | Sort-Object { [int]$_.Name }
+        foreach ($g in $byPara) {
+            $mots = (@($g.Group | ForEach-Object { $_.Word }) | Select-Object -Unique) -join ', '
+            $lines += "- paragraphe $([int]$g.Name + 1) : $mots"
+        }
+        $lines += ""
+    }
+
     if ($orphans.Count) {
         $lines += "## Signalements ecartes ($($orphans.Count))"
         $lines += ""
@@ -453,8 +632,9 @@ if ($ReportOnly) {
     Write-Host ("Termine en {0:N0} s - {1} tokens" -f $sw.Elapsed.TotalSeconds, $genTokens) -ForegroundColor Yellow
     $meca = @($found | Where-Object { $_.Source -eq 'mecanique' }).Count
     $lt   = @($found | Where-Object { $_.Source -eq 'languagetool' }).Count
-    Write-Host ("Signalements avec repere : {0} - modele {1}, LanguageTool {2}, mecanique {3}" -f `
-        $found.Count, ($found.Count - $lt - $meca), $lt, $meca) -ForegroundColor Yellow
+    $nar  = @($found | Where-Object { $_.Source -eq 'narrateur' }).Count
+    Write-Host ("Signalements avec repere : {0} - modele {1}, narrateur {2}, LanguageTool {3}, mecanique {4}" -f `
+        $found.Count, ($found.Count - $lt - $meca - $nar), $nar, $lt, $meca) -ForegroundColor Yellow
     if ($merged) { Write-Host ("Doublons fusionnes : {0}" -f $merged) -ForegroundColor DarkGray }
     if ($orphans.Count) {
         Write-Host ("Ecartes faute de repere : {0}" -f $orphans.Count) -ForegroundColor DarkYellow
