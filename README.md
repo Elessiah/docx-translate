@@ -1,14 +1,36 @@
-# Chaîne de traduction FR→EN pour documents Word
+# Traduire et relire des documents Word, sans rien casser
 
-Traduire des textes longs de façon **fiable** : sans perdre de paragraphes, sans
-casser la structure, sans que le gras et l'italique disparaissent en route.
+Deux outils dans un même dépôt, qui partagent le même principe.
 
-Deux moteurs interchangeables :
+**Traduire FR→EN** des textes longs de façon **fiable** : sans perdre de
+paragraphes, sans casser la structure, sans que le gras et l'italique
+disparaissent en route. Au choix, l'**API DeepL** (gratuite jusqu'à 500 000
+caractères par mois) ou un **modèle local** via LM Studio, entièrement hors
+ligne.
 
-- **API DeepL** — rapide, précise, gratuite jusqu'à 500 000 caractères par mois
-- **Modèle local** via LM Studio — entièrement hors ligne, sans quota ni compte
+**Relire le français** sans jamais laisser un modèle réécrire le texte. Les
+fautes sont *signalées*, avec une chaîne à coller dans Ctrl+F pour retrouver le
+passage. C'est vous qui tranchez.
 
 Le tout en PowerShell, sans dépendance à installer.
+
+---
+
+## Par où commencer
+
+| Ce que vous voulez faire | La commande |
+|---|---|
+| Traduire un `.docx` en anglais | `.\deepl-api.ps1 translate -Path "recit.docx"` |
+| Traduire sans réseau ni compte | `.\translate.ps1 -Path "recit.docx"` |
+| Relire mon français, sans rien modifier | `.\proofread.ps1 -Path "recit.docx" -ReportOnly` |
+| La même chose en 30 secondes | `.\proofread.ps1 -Path "recit.docx" -ReportOnly -NoModel` |
+| Vérifier les accords du narrateur | `.\proofread.ps1 -Path "recit.docx" -NarratorOnly -ContextFile "contexte.md"` |
+| Relire un texte dicté à la voix | `.\proofread.ps1 -Path "recit.docx" -Dictation` |
+| Corriger le fichier pour de bon | `.\proofread.ps1 -Path "recit.docx"` |
+| Voir ce que j'ai consommé | `.\stats.ps1` |
+
+Tout ce qui contient `-ReportOnly`, `-NarratorOnly` ou `-Dictation` **ne touche
+jamais au fichier source** : ces modes produisent un rapport, rien d'autre.
 
 ---
 
@@ -147,6 +169,35 @@ sens.
 
 Cette passe cherche ça, et rien d'autre. Les commandes de dictée et les
 fragments répétés à l'identique sont détectés sans modèle.
+
+### Les options de `proofread.ps1`
+
+Trois modes de repérage, qui ne cherchent pas la même chose. Aucun ne modifie
+le fichier.
+
+| Option | Ce qu'elle cherche |
+|---|---|
+| `-ReportOnly` | Fautes de français : accords, conjugaison, homophones, ponctuation |
+| `-NarratorOnly` | Uniquement les accords avec le narrateur d'un récit à la 1re personne |
+| `-Dictation` | Bizarreries de dictée vocale : homophones, mots avalés, non-sens |
+
+Sans aucune de ces options, le script **corrige** le fichier et produit une
+version corrigée à côté de l'original.
+
+| Réglage | Effet | Défaut |
+|---|---|---|
+| `-ContextFile` | Fiche de contexte : personnages, genre du narrateur, temps du récit | aucune |
+| `-Passes` | Nombre de lectures par paragraphe. Plus = meilleure couverture, plus lent | `2` |
+| `-ByBlock` | Examine des blocs au lieu d'un paragraphe à la fois : bien plus rapide, moins couvrant | désactivé |
+| `-NoModel` | LanguageTool seul, sans charger le modèle | désactivé |
+| `-NoLanguageTool` | Se passe de LanguageTool | désactivé |
+| `-Narrator` | Force `feminin` ou `masculin` au lieu de lire la fiche | lu dans la fiche |
+| `-Think` | Mode réflexion du modèle | activé en repérage |
+| `-Marks` | Transporte gras et italique (mode correction) | désactivé |
+| `-ReportPath` | Où écrire le rapport | à côté du source |
+
+Sur un texte long, `-ByBlock -Passes 1` descend de plusieurs heures à quelques
+minutes. Réservez le paragraphe par paragraphe à la relecture finale.
 
 ### Scripts individuels
 

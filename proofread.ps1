@@ -1,6 +1,18 @@
 <#
 .SYNOPSIS
-  Corrige un texte francais avant traduction : orthographe, grammaire, typographie.
+  Relit un texte francais : soit en le corrigeant, soit en signalant les fautes
+  sans y toucher.
+
+.DESCRIPTION
+  QUATRE MODES, dont trois ne modifient jamais le fichier source.
+
+    (sans option)    corrige le texte et ecrit une version corrigee a cote
+    -ReportOnly      signale les fautes de francais, ne corrige rien
+    -NarratorOnly    signale les seuls accords avec le narrateur
+    -Dictation       signale les bizarreries d'un texte dicte a la voix
+
+  Les trois modes de reperage produisent un rapport markdown ou chaque entree
+  donne une chaine a coller dans Ctrl+F, verifiee presente dans le fichier.
 
 .DESCRIPTION
   Passe le texte au modele local bloc par bloc et corrige ce qui est objectivement
@@ -36,6 +48,19 @@
 .EXAMPLE
   # Mode reperage : ne modifie rien, produit la liste des fautes a verifier
   .\proofread.ps1 -Path "textes\mon-recit.docx" -ReportOnly
+
+.EXAMPLE
+  # Verification rapide, sans charger le modele : LanguageTool seul, 30 s
+  .\proofread.ps1 -Path "textes\mon-recit.docx" -ReportOnly -NoModel
+
+.EXAMPLE
+  # Accords avec le narrateur. Le genre est lu dans la fiche de contexte.
+  .\proofread.ps1 -Path "textes\mon-recit.docx" -NarratorOnly -ContextFile "contexte.md"
+
+.EXAMPLE
+  # Texte dicte a la voix. Sur un texte long, -ByBlock -Passes 1 fait gagner
+  # des heures pour une couverture a peine moindre.
+  .\proofread.ps1 -Path "textes\mon-recit.docx" -Dictation -ByBlock -Passes 1
 
 .EXAMPLE
   .\proofread.ps1 -Path "textes\mon-recit.docx" -Out "textes\mon-recit_corrige.txt" -Marks
