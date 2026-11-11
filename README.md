@@ -84,14 +84,69 @@ Les scripts démarrent le serveur et chargent le modèle eux-mêmes si nécessai
 
 Sortie : un `.docx` avec la mise en forme, et le `.txt` correspondant.
 
-### Chaîne complète en local
+### Chaîne complète : du français corrigé aux deux versions publiables
 
 ```powershell
-.\pipelineDA.ps1 "mon-recit.docx"
+.\pipelineDA.ps1 "mon-recit.docx" -SplitChapters -FrHeader entete-fr.txt -Header entete-en.txt
 ```
 
-Enchaîne correction du français, mise en forme de la version française,
-traduction, révision, mise en forme de la version anglaise.
+1. correction du français par le modèle local (LM Studio) ;
+2. découpage et mise en forme de la version française ;
+3. traduction par DeepL, glossaire appliqué ;
+4. découpage et mise en forme de la version anglaise.
+
+Tout arrive dans `E:\AIs\Output` : `<nom>_FR_DA_p1.html`… et `<nom>_EN_DA_p1.html`…
+Le `.html` s'ouvre dans le navigateur, puis Ctrl+A / Ctrl+C et collage dans
+DeviantArt : l'italique et le gras passent.
+
+Variantes :
+
+| Option | Effet |
+|---|---|
+| `-FrenchOnly` | s'arrête après la version française |
+| `-SkipProofread` | texte déjà corrigé : pas de correction, LM Studio n'est pas lancé |
+| `-Engine local` | traduction hors ligne par le modèle local, suivie de sa révision |
+| `-ContextFile fiche.md` | contexte transmis au traducteur (non facturé par DeepL) |
+
+Avec DeepL, aucune révision par le modèle local : mesurée, elle dégradait la
+traduction (voir *Faire réviser une traduction par le modèle : abandonné*).
+
+### Publier en plusieurs chapitres
+
+Sur un texte déjà prêt, sans la chaîne :
+
+```powershell
+.\format-deviantart.ps1 "mon-recit_EN.docx" -Format html -English -SmartQuotes -SplitChapters -Header entete.txt
+```
+
+`-SplitChapters` coupe avant chaque titre de chapitre : un paragraphe court qui
+commence par *Chapitre*, *Chapter*, *Partie* ou *Part* suivi d'un numéro (`2`,
+`II`, `deux`, `premier`…), ou par *Prologue* / *Épilogue*. Une phrase comme
+« Part of me… » ou « Chapitre après chapitre, … » ne déclenche rien. Ce qui
+précède le premier titre (titre de l'œuvre, dédicace) reste avec le premier
+chapitre. Le script affiche les titres reconnus : vérifiez la liste.
+
+Combiné à `-SplitWords 3500`, un chapitre trop long est recoupé à une rupture de
+scène. Une partie par fichier : `_p1`, `_p2`…
+
+L'entête (`-Header`) et le pied (`-Footer`) sont collés autour de chaque partie.
+Ils prennent un fichier ou du texte direct, une ligne vide sépare deux
+paragraphes, et ces mots-clés sont remplacés :
+
+| Mot-clé | Remplacé par |
+|---|---|
+| `{title}` | titre tiré du nom de fichier |
+| `{part}` / `{parts}` | numéro de la partie / nombre de parties |
+| `{chapter}` | titre du chapitre de la partie (avec `-SplitChapters`) |
+
+```text
+{title} — {chapter} ({part}/{parts})
+
+Author's note: …
+```
+
+Dans la chaîne complète, `-Header`/`-Footer` vont à la version anglaise et
+`-FrHeader`/`-FrFooter` à la version française : un entête n'est jamais traduit.
 
 ### Relire un texte sans le laisser modifier
 

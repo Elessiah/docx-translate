@@ -25,8 +25,13 @@
   tirets cadratins de dialogue francais qui auraient survecu a la traduction.
 
   Publication :
-    -Header / -Footer  bloc colle avant / apres le texte (fichier ou texte libre)
+    -Header / -Footer  bloc colle avant / apres chaque partie (fichier ou texte
+                       libre). Remplace {title}, {part}, {parts} et {chapter}
+                       (titre du chapitre de la partie, avec -SplitChapters).
     -SplitWords        decoupe en plusieurs deviations, aux ruptures de scene
+    -SplitChapters     une deviation par chapitre : coupe avant chaque titre
+                       "Chapitre 2", "Chapter II", "Prologue", "Epilogue"...
+                       Combinable avec -SplitWords pour recouper un chapitre trop long.
     -Sheet             fiche .md : mots, temps de lecture, resume et tags
                        generes par le modele local
 
@@ -41,6 +46,7 @@
   .\format-deviantart.ps1 -Path "textes\mon-recit_EN_revised.txt" -English -SmartQuotes -Clipboard
   .\format-deviantart.ps1 -Path "textes\mon-recit.docx" -Format html -English -SmartQuotes -Sheet
   .\format-deviantart.ps1 -Path "SS" -Format both -SplitWords 4000 -Footer pied.txt -Force
+  .\format-deviantart.ps1 -Path "textes\mon-recit_EN.docx" -Format html -SplitChapters -Header entete.txt
 #>
 
 param(
@@ -57,6 +63,7 @@ param(
     [string]$Header,
     [string]$Footer,
     [int]$SplitWords = 0,
+    [switch]$SplitChapters,
     [switch]$Sheet,
     [int]$SheetWords = 1500,
     [string]$Model,
@@ -357,15 +364,72 @@ function Resolve-Block {
 }
 
 function Expand-Placeholders {
-    <# {title} {part} {parts} dans l'entete et le pied. #>
-    param($Block, [string]$Title, [int]$Part, [int]$Parts)
+    <# {title} {part} {parts} {chapter} dans l'entete et le pied. Le remplacement
+       passe par .Replace() : un titre contenant $1 ou $& ne doit pas etre lu
+       comme une reference de groupe regex. #>
+    param($Block, [string]$Title, [int]$Part, [int]$Parts, [string]$Chapter = '')
     , @($Block | ForEach-Object {
-        $t = $_.Text -replace '\{title\}', $Title -replace '\{part\}', $Part -replace '\{parts\}', $Parts
+        $t = $_.Text.Replace('{title}', $Title).Replace('{parts}', "$Parts").Replace('{part}', "$Part").Replace('{chapter}', $Chapter)
         New-Para -Runs @(New-Run -Text $t) -Center $_.Center
     })
 }
 
 # ---------------------------------------------------------------- decoupage
+
+# Nombres ecrits en toutes lettres, francais et anglais, jusqu'a vingt.
+$NUMBER_WORDS = 'un|une|deux|trois|quatre|cinq|six|sept|huit|neuf|dix|onze|douze|treize|' +
+                'quatorze|quinze|seize|dix-sept|dix-huit|dix-neuf|vingt|premier|premiere|' +
+                'premi\u00E8re|dernier|derniere|derni\u00E8re|' +
+                'one|two|three|four|five|six|seven|eight|nine|ten|eleven|twelve|thirteen|' +
+                'fourteen|fifteen|sixteen|seventeen|eighteen|nineteen|twenty|first|last|final'
+
+function Test-ChapterHeading {
+    <# Vrai pour un titre de chapitre : "Chapitre 2", "Chapter II : The Fall",
+       "Partie trois", "Prologue", "Epilogue". Exige un numero apres Chapitre /
+       Partie et un paragraphe court, pour ne pas couper sur une phrase qui
+       commencerait par "Part of me..." ou "Chapitre apres chapitre, ...". #>
+    param([string]$Text)
+    $t = $Text.Trim()
+    if (-not $t -or (Measure-Words $t) -gt 12) { return $false }
+    # chiffres romains en majuscules seulement : "Part i" n'existe pas, "Part I" si
+    $num = '(\d+|(?-i:[IVXLC]+)|' + $NUMBER_WORDS + ')'
+    $kw = '^((chapitre|chapter|partie|part)\s+' + $num + '|prologue|\u00E9pilogue|epilogue)'
+    # titre seul, ou suivi d'un separateur puis d'un sous-titre
+    if ($t -match ($kw + '\s*([.:,\u2014\u2013-].*)?$')) { return $true }
+    # "Chapter 2 The Fall" : suite sans separateur. Une phrase se termine par une
+    # ponctuation, un titre rarement : "Part I think we should go." est ecarte.
+    if ($t -match ($kw + '\s+\S')) { return ($t -notmatch '[.!?\u2026"\u201D\u00BB]$') }
+    $false
+}
+
+function Split-AtChapters {
+    <# Coupe avant chaque titre de chapitre. Ce qui precede le premier titre (titre
+       de l'oeuvre, epigraphe) reste avec le premier chapitre plutot que de former
+       une partie a part. Une rupture de scene collee au titre disparait : la
+       coupure de chapitre la remplace. Retourne des objets { Chapter; Paragraphs }. #>
+    param($Paragraphs)
+
+    $chunks = @(); $cur = @(); $heading = ''; $seen = $false
+    foreach ($p in $Paragraphs) {
+        if (-not $p.IsBreak -and (Test-ChapterHeading $p.Text)) {
+            if ($seen) {
+                $chunks += [pscustomobject]@{ Chapter = $heading; Paragraphs = @($cur) }
+                $cur = @()
+            }
+            $seen = $true
+            $heading = $p.Text.Trim()
+        }
+        $cur += $p
+    }
+    if ($cur.Count) { $chunks += [pscustomobject]@{ Chapter = $heading; Paragraphs = @($cur) } }
+
+    , @($chunks | ForEach-Object {
+        $ps = @($_.Paragraphs)
+        while ($ps.Count -and $ps[0].IsBreak)  { $ps = @($ps | Select-Object -Skip 1) }
+        while ($ps.Count -and $ps[-1].IsBreak) { $ps = @($ps | Select-Object -SkipLast 1) }
+        [pscustomobject]@{ Chapter = $_.Chapter; Paragraphs = $ps }
+    } | Where-Object { $_.Paragraphs.Count })
+}
 
 function Split-IntoParts {
     <# Coupe en parties sous un budget de mots, de preference a la derniere rupture
@@ -558,6 +622,7 @@ if ($English)          { $opts += "ponctuation anglaise" }
 if ($French)           { $opts += "typographie francaise preservee" }
 if ($KeepDashes)       { $opts += "tirets de dialogue conserves" }
 if ($SmartQuotes)      { $opts += "typographie courbe" }
+if ($SplitChapters)    { $opts += "decoupage par chapitre" }
 if ($SplitWords -gt 0) { $opts += "decoupage a $SplitWords mots" }
 if ($headerBlock.Count){ $opts += "entete" }
 if ($footerBlock.Count){ $opts += "pied" }
@@ -618,19 +683,38 @@ foreach ($file in $files) {
     }
 
     # ---- decoupage et ecriture
-    $parts = Split-IntoParts -Paragraphs $paras -MaxWords $SplitWords
+    # D'abord par chapitre, puis chaque chapitre sous le budget de mots s'il y en a un.
+    $chapters = if ($SplitChapters) { Split-AtChapters $paras }
+                else { @([pscustomobject]@{ Chapter = ''; Paragraphs = $paras }) }
+    if ($SplitChapters) {
+        $named = @($chapters | Where-Object { $_.Chapter })
+        if (-not $named.Count) {
+            Write-Warning "  -SplitChapters : aucun titre de chapitre reconnu, texte laisse d'un seul tenant"
+        }
+        else {
+            Write-Host ("  {0} chapitre(s) : {1}" -f $named.Count, (($named | ForEach-Object { $_.Chapter }) -join ' | ')) -ForegroundColor DarkGray
+        }
+    }
+    $parts = @(); $partChapters = @()
+    foreach ($c in $chapters) {
+        foreach ($sub in (Split-IntoParts -Paragraphs $c.Paragraphs -MaxWords $SplitWords)) {
+            $parts += , @($sub)
+            $partChapters += $c.Chapter
+        }
+    }
     $dir = if ($OutDir) { $OutDir } else { $file.DirectoryName }
     $written = @()
 
     for ($i = 0; $i -lt $parts.Count; $i++) {
         $body = @()
-        if ($headerBlock.Count) { $body += Expand-Placeholders $headerBlock $title ($i + 1) $parts.Count }
+        if ($headerBlock.Count) { $body += Expand-Placeholders $headerBlock $title ($i + 1) $parts.Count $partChapters[$i] }
         $body += $parts[$i]
-        if ($footerBlock.Count) { $body += Expand-Placeholders $footerBlock $title ($i + 1) $parts.Count }
+        if ($footerBlock.Count) { $body += Expand-Placeholders $footerBlock $title ($i + 1) $parts.Count $partChapters[$i] }
 
         $partSuffix = if ($parts.Count -gt 1) { "_p{0}" -f ($i + 1) } else { "" }
         $base = Join-Path $dir ($file.BaseName + $Suffix + $partSuffix)
         $partTitle = if ($parts.Count -gt 1) { "{0} ({1}/{2})" -f $title, ($i + 1), $parts.Count } else { $title }
+        if ($partChapters[$i]) { $partTitle = "{0} - {1}" -f $partTitle, $partChapters[$i] }
 
         if ($Format -in @('txt', 'both')) {
             $outTxt = "$base.txt"

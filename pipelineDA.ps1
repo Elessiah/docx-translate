@@ -5,22 +5,24 @@
 .DESCRIPTION
   Une seule commande, un seul argument. Le script se charge du reste :
 
-    0. Demarre le serveur LM Studio s'il est arrete, et charge le modele avec
-       un contexte de 20 000 tokens (le chargement JIT n'en donne que 8 192).
-    1. translate.ps1  -> <nom>_EN.docx
-    2. review.ps1     -> <nom>_EN_revised.docx  + <nom>_EN_revised_notes.md
-    3. format-deviantart.ps1 -> <nom>_EN_revised_DA.txt
+    1. LM Studio demarre si besoin (correction, ou traduction -Engine local),
+       avec un contexte de 20 000 tokens (le chargement JIT n'en donne que 8 192).
+    2. proofread.ps1         -> <nom>_FR.docx            francais corrige
+    3. format-deviantart.ps1 -> <nom>_FR_DA[_pN].txt/.html  version francaise
+    4. traduction            -> <nom>_EN.docx
+         -Engine deepl (defaut) : deepl-api.ps1, glossaire applique
+         -Engine local          : translate.ps1, puis revision review.ps1
+    5. format-deviantart.ps1 -> <nom>_EN[_revised]_DA[_pN].txt/.html
+
+  Avec DeepL, pas de revision par le modele local : mesuree, elle degradait la
+  traduction (paragraphes recopies en francais sans que le controle le voie).
 
   Tout atterrit dans E:\AIs\Output par defaut.
 
   Deux sorties, deux usages :
-    .docx  archivage. Reouvrable dans Word, c'est la version a conserver.
-    .txt   publication. Les lignes vides entre paragraphes sont litterales,
-           donc rien ne peut les reflower ni les avaler comme le ferait Word.
-           A ouvrir puis Ctrl+A / Ctrl+C, ou directement -Clipboard.
-
-  -Format html reste disponible, mais n'apporte rien ici : il sert a preserver
-  italiques et gras, or la traduction produit du texte brut sans mise en forme.
+    .html  publication. Ctrl+A / Ctrl+C dans le navigateur puis coller dans
+           DeviantArt : italique et gras conserves.
+    .txt   texte brut, mise en forme perdue. -Clipboard le copie directement.
 
 .EXAMPLE
   .\pipelineDA.ps1 "D:\textes\mon-recit.docx"
@@ -30,6 +32,22 @@
 
 .EXAMPLE
   .\pipelineDA.ps1 "textes\mon-recit.docx" -OutDir "D:\Publications" -KeepIntermediates
+
+.EXAMPLE
+  .\pipelineDA.ps1 "textes\mon-recit.docx" -SplitChapters -FrHeader entete-fr.txt -Header entete-en.txt
+  Correction, decoupage par chapitre et mise en forme en francais, puis
+  traduction DeepL et la meme chose en anglais.
+
+.EXAMPLE
+  .\pipelineDA.ps1 "textes\mon-recit.docx" -FrenchOnly -SplitChapters -FrHeader entete-fr.txt
+  Corrige le francais, le coupe en une deviation par chapitre, le met en forme,
+  et s'arrete la : ni traduction ni revision.
+
+  Publication (transmis a format-deviantart.ps1) :
+    -SplitChapters / -SplitWords  decoupage en plusieurs deviations
+    -Header / -Footer             entete et pied de la version anglaise
+    -FrHeader / -FrFooter         entete et pied de la version francaise
+    -FrenchOnly                   s'arrete apres la mise en forme francaise
 #>
 
 param(
@@ -41,6 +59,7 @@ param(
     [int]$MaxParagraphs = 8,
     [int]$ContextLength = 20000,
     [ValidateSet('txt', 'html', 'both')][string]$Format = 'both',
+    [ValidateSet('deepl', 'local')][string]$Engine = 'deepl',
     [string]$Model,
     [string]$Endpoint = "http://localhost:1234/v1/chat/completions",
     [switch]$SkipProofread,
@@ -48,6 +67,13 @@ param(
     [switch]$SkipFrench,
     [switch]$NoTypography,
     [switch]$KeepIntermediates,
+    [switch]$SplitChapters,
+    [int]$SplitWords = 0,
+    [string]$Header,
+    [string]$Footer,
+    [string]$FrHeader,
+    [string]$FrFooter,
+    [switch]$FrenchOnly,
     [switch]$Clipboard
 )
 
@@ -56,6 +82,11 @@ $ErrorActionPreference = "Stop"
 if (-not $Model) { $Model = Get-DefaultModel }
 
 if (-not (Test-Path $Path)) { throw "Fichier introuvable : $Path" }
+if ($FrenchOnly -and $SkipFrench) { throw "-FrenchOnly et -SkipFrench s'excluent : il ne resterait rien a faire." }
+foreach ($h in @($Header, $Footer, $FrHeader, $FrFooter)) {
+    # Un chemin mal tape serait colle tel quel comme texte libre : on prefere s'arreter.
+    if ($h -and $h -match '\.(txt|md)$' -and -not (Test-Path -LiteralPath $h)) { throw "Fichier d'entete ou de pied introuvable : $h" }
+}
 $src = (Get-Item $Path).FullName
 $name = [System.IO.Path]::GetFileNameWithoutExtension($src)
 if (-not (Test-Path $OutDir)) { New-Item -ItemType Directory -Force -Path $OutDir | Out-Null }
@@ -74,7 +105,10 @@ $total = [System.Diagnostics.Stopwatch]::StartNew()
 
 Write-Host ""
 Write-Host "=== 1. LM Studio ===" -ForegroundColor Magenta
-Initialize-LMStudioSession -Model $Model -Endpoint $Endpoint -ContextLength $ContextLength
+# Le modele local ne sert qu'a la correction et a la traduction -Engine local.
+$needLocal = (-not $SkipProofread) -or ($Engine -eq 'local' -and -not $FrenchOnly)
+if ($needLocal) { Initialize-LMStudioSession -Model $Model -Endpoint $Endpoint -ContextLength $ContextLength }
+else { Write-Host "non requis" -ForegroundColor DarkGray }
 
 # ---------------------------------------------------------------- 2. correction FR
 # En tete de chaine : tout ce qui suit part d'un francais deja corrige.
@@ -117,32 +151,57 @@ if (-not $SkipFrench) {
         SmartQuotes = $true
         Force       = $true
     }
+    if ($SplitChapters)    { $frArgs.SplitChapters = $true }
+    if ($SplitWords -gt 0) { $frArgs.SplitWords = $SplitWords }
+    if ($FrHeader)         { $frArgs.Header = $FrHeader }
+    if ($FrFooter)         { $frArgs.Footer = $FrFooter }
     & "$PSScriptRoot\format-deviantart.ps1" @frArgs
+}
+
+if ($FrenchOnly) {
+    if (-not $KeepIntermediates -and (Test-Path $frTxt)) { Remove-Item $frTxt -Force }
+    $total.Stop()
+    Write-Host ""
+    Write-Host "=== Termine en $([math]::Round($total.Elapsed.TotalMinutes,1)) min (francais seul) ===" -ForegroundColor Yellow
+    Get-ChildItem $OutDir -Filter "$name`_*" | Sort-Object Name |
+        Format-Table @{n='Fichier';e={$_.Name}}, @{n='Ko';e={[math]::Round($_.Length/1KB,1)}} -AutoSize
+    return
 }
 
 # ---------------------------------------------------------------- 4. traduction
 Write-Host ""
-Write-Host "=== 4. Traduction ===" -ForegroundColor Magenta
-$tArgs = @{
-    Path          = $frSource
-    Out           = $enTxt
-    MaxWords      = $MaxWords
-    MaxParagraphs = $MaxParagraphs
-    Marks         = $true
-    Model         = $Model
-    Endpoint      = $Endpoint
+Write-Host ("=== 4. Traduction ({0}) ===" -f $Engine) -ForegroundColor Magenta
+if ($Engine -eq 'deepl') {
+    # Ecrit <nom>_EN.docx avec italiques et gras, et <nom>_EN.txt a cote.
+    $dArgs = @{ Path = $frSource; Out = $enDocx; OutDir = $OutDir }
+    if ($Context)     { $dArgs.Context     = $Context }
+    if ($ContextFile) { $dArgs.ContextFile = $ContextFile }
+    & "$PSScriptRoot\deepl-api.ps1" translate @dArgs
+    if (-not (Test-Path $enDocx)) { throw "La traduction DeepL n'a produit aucun fichier." }
 }
-if ($Context)     { $tArgs.Context     = $Context }
-if ($ContextFile) { $tArgs.ContextFile = $ContextFile }
-& "$PSScriptRoot\translate.ps1" @tArgs
+else {
+    $tArgs = @{
+        Path          = $frSource
+        Out           = $enTxt
+        MaxWords      = $MaxWords
+        MaxParagraphs = $MaxParagraphs
+        Marks         = $true
+        Model         = $Model
+        Endpoint      = $Endpoint
+    }
+    if ($Context)     { $tArgs.Context     = $Context }
+    if ($ContextFile) { $tArgs.ContextFile = $ContextFile }
+    & "$PSScriptRoot\translate.ps1" @tArgs
 
-if (-not (Test-Path $enTxt)) { throw "La traduction n'a produit aucun fichier." }
-Write-DocxFromText -Path $enDocx -Text ([System.IO.File]::ReadAllText($enTxt, [System.Text.Encoding]::UTF8))
+    if (-not (Test-Path $enTxt)) { throw "La traduction n'a produit aucun fichier." }
+    Write-DocxFromText -Path $enDocx -Text ([System.IO.File]::ReadAllText($enTxt, [System.Text.Encoding]::UTF8))
+}
 Write-Host "-> $enDocx" -ForegroundColor Green
 
-# ---------------------------------------------------------------- 2. revision
+# ---------------------------------------------------------------- 5. revision
+# Reservee a la traduction locale : sur DeepL, la revision degradait la sortie.
 $toFormat = $enDocx
-if (-not $SkipReview) {
+if ($Engine -eq 'local' -and -not $SkipReview) {
     Write-Host ""
     Write-Host "=== 5. Revision ===" -ForegroundColor Magenta
     $rArgs = @{
@@ -181,6 +240,10 @@ if (-not $NoTypography) { $fArgs.English = $true; $fArgs.SmartQuotes = $true }
 # L'auteur garde les tirets de dialogue a la francaise : ne pas les signaler.
 $fArgs.KeepDashes = $true
 if ($Clipboard)         { $fArgs.Clipboard = $true }
+if ($SplitChapters)     { $fArgs.SplitChapters = $true }
+if ($SplitWords -gt 0)  { $fArgs.SplitWords = $SplitWords }
+if ($Header)            { $fArgs.Header = $Header }
+if ($Footer)            { $fArgs.Footer = $Footer }
 & "$PSScriptRoot\format-deviantart.ps1" @fArgs
 
 # ---------------------------------------------------------------- bilan
