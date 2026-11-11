@@ -39,6 +39,13 @@
   traduction DeepL et la meme chose en anglais.
 
 .EXAMPLE
+  .\pipelineDA.ps1 "textes\mon-recit.docx" -CheckNarrator -ContextFile contexte.md
+  Recit a la premiere personne : liste les accords qui ne correspondent pas au
+  genre du narrateur dans <nom>_narrateur.md, puis S'ARRETE. Corriger dans Word,
+  et relancer sans -CheckNarrator. Le genre est lu dans la fiche
+  ("Narratrice : ..." ou "Genre du narrateur : F"), ou force par -Narrator.
+
+.EXAMPLE
   .\pipelineDA.ps1 "textes\mon-recit.docx" -FrenchOnly -SplitChapters -FrHeader entete-fr.txt
   Corrige le francais, le coupe en une deviation par chapitre, le met en forme,
   et s'arrete la : ni traduction ni revision.
@@ -74,6 +81,8 @@ param(
     [string]$FrHeader,
     [string]$FrFooter,
     [switch]$FrenchOnly,
+    [switch]$CheckNarrator,
+    [ValidateSet('', 'feminin', 'masculin')][string]$Narrator = '',
     [switch]$Clipboard
 )
 
@@ -106,9 +115,36 @@ $total = [System.Diagnostics.Stopwatch]::StartNew()
 Write-Host ""
 Write-Host "=== 1. LM Studio ===" -ForegroundColor Magenta
 # Le modele local ne sert qu'a la correction et a la traduction -Engine local.
-$needLocal = (-not $SkipProofread) -or ($Engine -eq 'local' -and -not $FrenchOnly)
+$needLocal = $CheckNarrator -or (-not $SkipProofread) -or ($Engine -eq 'local' -and -not $FrenchOnly)
 if ($needLocal) { Initialize-LMStudioSession -Model $Model -Endpoint $Endpoint -ContextLength $ContextLength }
 else { Write-Host "non requis" -ForegroundColor DarkGray }
+
+# ------------------------------------------------------ verification du narrateur
+# Un rapport, pas une correction : c'est l'auteur qui tranche. La chaine s'arrete
+# donc ici, pour qu'il corrige le .docx avant de relancer sans -CheckNarrator.
+if ($CheckNarrator) {
+    Write-Host ""
+    Write-Host "=== Accords avec le narrateur ===" -ForegroundColor Magenta
+    $narReport = Join-Path $OutDir "$name`_narrateur.md"
+    $nArgs = @{
+        Path         = $src
+        NarratorOnly = $true
+        ReportPath   = $narReport
+        Model        = $Model
+        Endpoint     = $Endpoint
+    }
+    if ($Narrator)    { $nArgs.Narrator    = $Narrator }
+    if ($Context)     { $nArgs.Context     = $Context }
+    if ($ContextFile) { $nArgs.ContextFile = $ContextFile }
+    & "$PSScriptRoot\proofread.ps1" @nArgs
+
+    $total.Stop()
+    Write-Host ""
+    Write-Host "=== Termine en $([math]::Round($total.Elapsed.TotalMinutes,1)) min ===" -ForegroundColor Yellow
+    Write-Host "Rapport : $narReport" -ForegroundColor Green
+    Write-Host "Corrige le .docx dans Word, puis relance la pipeline sans -CheckNarrator." -ForegroundColor Yellow
+    return
+}
 
 # ---------------------------------------------------------------- 2. correction FR
 # En tete de chaine : tout ce qui suit part d'un francais deja corrige.

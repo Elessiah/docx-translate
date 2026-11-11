@@ -103,6 +103,7 @@ Variantes :
 
 | Option | Effet |
 |---|---|
+| `-CheckNarrator` | récit à la 1re personne : rapport des accords avec le narrateur, puis arrêt (voir *Vérifier le genre du narrateur*) |
 | `-FrenchOnly` | s'arrête après la version française |
 | `-SkipProofread` | texte déjà corrigé : pas de correction, LM Studio n'est pas lancé |
 | `-Engine local` | traduction hors ligne par le modèle local, suivie de sa révision |
@@ -209,6 +210,21 @@ sont listés en fin de rapport plutôt que jetés.
 Le genre est lu dans la fiche de contexte (`Narratrice : ...`, `Genre du
 narrateur : F`). Sans mention explicite, le script s'arrête au lieu de deviner.
 `-Narrator feminin` force la valeur.
+
+Depuis la chaîne complète, à lancer avant tout le reste :
+
+```powershell
+.\pipelineDA.ps1 "mon-recit.docx" -CheckNarrator -ContextFile "contexte.md"
+```
+
+Le rapport `<nom>_narrateur.md` arrive dans le dossier de sortie et la chaîne
+s'arrête là : on corrige le `.docx` dans Word, puis on relance sans
+`-CheckNarrator`. Rien n'est corrigé automatiquement.
+
+Sur un texte d'essai à narratrice comportant quatre fautes (`sorti`, `fatigué`,
+`Assis` en apposition, `senti`), les quatre sont sortis, et le `assis` qui
+qualifiait un autre personnage a été écarté. Environ 5 minutes, chargement du
+modèle compris.
 
 ### Relire un texte dicté
 
