@@ -536,7 +536,15 @@ function Repair-DialogueDashes {
                 if ($hasQuote) {
                     $n = ([regex]::Matches($outLines[$j], '["\u201C\u201D]')).Count
                     $outLines[$j] = [regex]::Replace($outLines[$j], $startsQuote, "`$1$mark ")
-                    if ($n -eq 2) { $outLines[$j] = [regex]::Replace($outLines[$j], '["\u201C\u201D]', '', 1) }
+                    if ($srcLines[$j] -notmatch '["\u201C\u201D\u00AB\u00BB]') {
+                        # Source sans guillemets : DeepL a remplace le tiret par un
+                        # guillemet ET encadre chaque phrase autour de l'incise
+                        # ("...," dit-il. "...") - quatre guillemets, pas deux.
+                        $outLines[$j] = $outLines[$j] -replace '["\u201C\u201D\u00AB\u00BB]', ''
+                        $outLines[$j] = $outLines[$j] -replace '  +', ' '
+                        $stripped += ($n - 1)
+                    }
+                    elseif ($n -eq 2) { $outLines[$j] = [regex]::Replace($outLines[$j], '["\u201C\u201D]', '', 1) }
                 }
                 else { $outLines[$j] = "$mark " + $outLines[$j].TrimStart() }
                 $fixed++
