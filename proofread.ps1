@@ -384,7 +384,13 @@ if ($ReportOnly) {
             $para  = $paragraphs[$p]
             # Sans @() : la fonction rend deja un tableau, l enrober le
             # transformerait en un seul objet.
-            $cands = Get-NarratorCandidates -Paragraph $para -Gender $narGender
+            $allCands = Get-NarratorCandidates -Paragraph $para -Gender $narGender -IncludeSkipped
+            $cands = @($allCands | Where-Object { -not $_.Skip })
+            # Accordes avec un nom voisin ("mon corps tendu") : pas soumis au
+            # modele, mais listes avec les ecartes plutot que jetes.
+            foreach ($s in @($allCands | Where-Object { $_.Skip })) {
+                $narAside += @{ Para = $p; Word = ('{0} ({1})' -f $s.Word, $s.Skip); Expected = $s.Expected }
+            }
 
             Write-Host ("[{0}/{1}] paragraphe {2}..." -f ($p + 1), $paragraphs.Count, ($p + 1)) -NoNewline
             if (-not $cands.Count) {
@@ -615,9 +621,11 @@ if ($ReportOnly) {
     $lines += "Les signalements sont donnes dans l'ordre du texte."
     $lines += ""
     if ($NarratorOnly) {
-        $lines += "La forme proposee ici est calculee par regle de morphologie, pas ecrite"
-        $lines += "par le modele : elle est fiable. Ce qui reste incertain, c'est de savoir"
-        $lines += "si le mot se rapporte bien au narrateur - c'est la que tu tranches."
+        $lines += "Une seule question par ligne : le mot qualifie-t-il le narrateur ? Si oui,"
+        $lines += "prends la forme indiquee. Si non (il qualifie un objet, une partie du"
+        $lines += "corps, un autre personnage), ignore la ligne : la forme indiquee n'est que"
+        $lines += "le mot accorde mecaniquement au genre du narrateur, elle n'a de sens que"
+        $lines += "dans le premier cas."
         $lines += ""
     }
     $lines += "La colonne de droite est ce qui est **propose**. Pour les signalements du"
@@ -641,8 +649,10 @@ if ($ReportOnly) {
         $head = $f.Reason
         if ($f.Source -eq 'mecanique')    { $head = $head + ' (detection mecanique)' }
         if ($f.Source -eq 'languagetool') { $head = $head + ' (LanguageTool)' }
-        if ($f.Source -eq 'narrateur')    { $head = $head + ' (forme verifiee par le code)' }
-        if ($f.Suggestion) { $head = $head + '  ->  ' + $f.Suggestion }
+        if ($f.Source -eq 'narrateur' -and $f.Suggestion) {
+            $head = $head + '  ->  s''il qualifie le narrateur : ' + $f.Suggestion
+        }
+        elseif ($f.Suggestion) { $head = $head + '  ->  ' + $f.Suggestion }
 
         $lines += "**Ctrl+F** $BT$search$BT"
         $lines += ""
@@ -664,10 +674,11 @@ if ($ReportOnly) {
     }
 
     if ($narAside -and $narAside.Count) {
-        $lines += "## Accords ecartes par le modele ($($narAside.Count))"
+        $lines += "## Accords ecartes ($($narAside.Count))"
         $lines += ""
-        $lines += "Ces mots ont la forme d'un desaccord, mais le modele estime qu'ils ne se"
-        $lines += "rapportent pas au narrateur : verbes, mots designant un autre personnage."
+        $lines += "Ces mots ont la forme d'un desaccord, mais ne se rapportent pas au narrateur"
+        $lines += "selon le modele (verbes, autre personnage) ou selon une regle : ceux marques"
+        $lines += "'accorde avec' qualifient le nom qui les precede, comme dans 'mon corps tendu'."
         $lines += "Ils sont listes ici plutot que jetes - un survol suffit a rattraper une"
         $lines += "erreur de tri."
         $lines += ""

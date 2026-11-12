@@ -1746,7 +1746,8 @@ function Get-NarratorNoiseReason {
     param(
         [Parameter(Mandatory)][string]$Paragraph,
         [Parameter(Mandatory)][int]$Start,
-        [Parameter(Mandatory)][string]$Word
+        [Parameter(Mandatory)][string]$Word,
+        [ValidateSet('feminin', 'masculin')][string]$Gender = 'feminin'
     )
     $lower = $Word.ToLowerInvariant()
     $plain = (Remove-Diacritics -Text $lower)
@@ -1771,6 +1772,35 @@ function Get-NarratorNoiseReason {
     if ($script:NarratorSubjects -contains $prev)    { return 'verbe conjugue' }
     # "en imaginant" : gerondif, toujours invariable
     if ($prev -eq 'en' -and $plain -match 'ant$')    { return 'gerondif' }
+
+    # Determinant + nom + mot : "mon corps tendu", "deux objets emprisonne".
+    # Le mot qualifie ce nom, pas le narrateur. Garde-fous : le nom du milieu
+    # n'est ni un adverbe ("un peu perdu", "le plus perdu") ni un verbe, et le
+    # "determinant" n'est pas un pronom complement ("je le suis devenu").
+    $m2 = [regex]::Match($before, '(?:^|[^\p{L}])(\p{L}+)(\s+|' + $apos + ')(\p{L}+)\s+$')
+    if ($m2.Success) {
+        $det  = (Remove-Diacritics -Text $m2.Groups[1].Value.ToLowerInvariant())
+        $noun = (Remove-Diacritics -Text $m2.Groups[3].Value.ToLowerInvariant())
+        # Seul un determinant compatible avec la forme du mot prouve l'accord avec
+        # le nom : "a la verticale denude" ne s'accorde pas avec "verticale", il
+        # vise donc le narrateur. Pluriel : le "je" est singulier, un mot qui
+        # suit "mes bras" ne le concerne pas.
+        $plural = @('les', 'des', 'aux', 'mes', 'tes', 'ses', 'nos', 'vos', 'leurs', 'ces',
+                    'quels', 'quelles', 'deux', 'trois', 'quatre', 'cinq', 'plusieurs', 'quelques')
+        $mascSing = @('le', 'un', 'du', 'au', 'mon', 'ton', 'son', 'ce', 'cet', 'quel')
+        $femSing  = @('la', 'une', 'ma', 'ta', 'sa', 'cette', 'quelle')
+        $dets = $plural + $(if ($Gender -eq 'masculin') { $femSing } else { $mascSing })
+        $notNouns = $script:GenderInvariable + $script:VerbForms1P + $script:FunctionWords +
+                    @('peu', 'si', 'tres', 'trop', 'plus', 'moins')
+        if (($dets -contains $det) -and ($notNouns -notcontains $noun)) {
+            $lead = $before.Substring(0, $m2.Groups[1].Index)
+            $p3 = [regex]::Match($lead, '(\p{L}+)(\s+|' + $apos + ')$')
+            $pron = @('je', 'j', 'tu', 'il', 'elle', 'on', 'nous', 'vous', 'ils', 'elles',
+                      'me', 'm', 'te', 't', 'se', 's', 'ne', 'n', 'y', 'en')
+            $isPronoun = $p3.Success -and ($pron -contains (Remove-Diacritics -Text $p3.Groups[1].Value.ToLowerInvariant()))
+            if (-not $isPronoun) { return ('accorde avec "' + $m2.Groups[3].Value + '"') }
+        }
+    }
     ''
 }
 
@@ -1784,7 +1814,8 @@ function Get-NarratorCandidates {
        une question fermee, la seule qu'il traite de facon fiable. #>
     param(
         [Parameter(Mandatory)][string]$Paragraph,
-        [Parameter(Mandatory)][ValidateSet('feminin', 'masculin')][string]$Gender
+        [Parameter(Mandatory)][ValidateSet('feminin', 'masculin')][string]$Gender,
+        [switch]$IncludeSkipped
     )
 
     $out = @()
@@ -1797,8 +1828,18 @@ function Get-NarratorCandidates {
         $verdict = Test-NarratorAgreement -Word $w -Gender $Gender
         if (-not $verdict.Mismatch) { continue }
         # Ecartes par regle avant le modele : chacun de ces mots finissait
-        # retenu "par prudence" et noyait les vrais desaccords.
-        if (Get-NarratorNoiseReason -Paragraph $Paragraph -Start $m.Index -Word $w) { continue }
+        # retenu "par prudence" et noyait les vrais desaccords. Ceux qui
+        # s'accordent avec un nom voisin sont rendus marques (-IncludeSkipped)
+        # pour etre listes : sans virgule, "je fixe le plafond allonge" peut
+        # encore viser le narrateur.
+        $noise = Get-NarratorNoiseReason -Paragraph $Paragraph -Start $m.Index -Word $w -Gender $Gender
+        if ($noise) {
+            if ($IncludeSkipped -and $noise -like 'accorde avec*') {
+                $out += @{ Word = $w; Start = $m.Index; Length = $m.Length
+                           Expected = $verdict.Expected; Why = $verdict.Why; Skip = $noise }
+            }
+            continue
+        }
 
         $out += @{
             Word     = $w

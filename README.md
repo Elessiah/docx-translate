@@ -210,11 +210,22 @@ sont listés en fin de rapport plutôt que jetés.
 Avant le modèle, des règles sûres retirent ce qui ne peut pas s'accorder avec
 le narrateur : un nom précédé d'un déterminant (`son corps`, `la peau`), un
 verbe juste après un pronom sujet (`j'allais`), un pluriel en `-és`, un
-gérondif (`en imaginant`), quelques invariables (`Merci`, `été`, `peur`). Sur
-une nouvelle de 356 paragraphes, ces règles auraient ramené le rapport de 151
-à 57 accords à vérifier sans retirer un seul vrai désaccord. Les participes
+gérondif (`en imaginant`), quelques invariables (`Merci`, `été`, `peur`), un
+mot qui s'accorde avec le nom qui le précède (`mon corps tendu`, `mes bras
+immobilisé`). Cette dernière règle regarde le déterminant : dans « à la
+verticale dénudé », le mot ne peut pas s'accorder avec *verticale*, il vise
+donc la narratrice et reste signalé. Les mots qu'elle écarte sont listés en fin
+de rapport, car sans virgule (« je fixe le plafond allongé ») ils peuvent encore
+viser le narrateur.
+
+Sur une nouvelle de 356 paragraphes, ces règles auraient ramené le rapport de
+151 à 44 accords à vérifier sans retirer un seul vrai désaccord. Les participes
 après *avoir* restent soumis : dans « il m'a poussé », le « m' » est la
 narratrice.
+
+Chaque ligne indique la forme à écrire *si* le mot qualifie le narrateur. Ce
+n'est pas une correction à appliquer : c'est le mot mis au bon genre, qui n'a
+de sens que dans ce cas.
 
 Ce mode ne lance pas LanguageTool : ses remarques générales noyaient les
 accords. Pour elles, `-ReportOnly -NoModel` fait une passe à part en 30 s.
