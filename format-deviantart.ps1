@@ -477,7 +477,12 @@ function ConvertTo-DaText {
 }
 
 function ConvertTo-DaHtml {
-    param($Paragraphs, [string]$Title)
+    <# L'espace entre paragraphes ne peut pas etre une marge CSS : l'editeur
+       DeviantArt jette la mise en page au collage et les paragraphes se
+       retrouvent colles. Comme dans le .txt, la respiration est donc une vraie
+       ligne vide - un paragraphe ne contenant qu'une espace insecable, qu'un
+       editeur riche garde au collage, la ou il supprime un <p></p> vide. #>
+    param($Paragraphs, [string]$Title, [int]$Blank = 1)
 
     $body = foreach ($p in $Paragraphs) {
         $inner = foreach ($r in $p.Runs) {
@@ -497,12 +502,12 @@ function ConvertTo-DaHtml {
 <style>
   body { max-width: 42em; margin: 3em auto; padding: 0 1.5em;
          font: 1.05em/1.7 Georgia, "Times New Roman", serif; }
-  p { margin: 0 0 1.2em; }
+  p { margin: 0; }
   p.c { text-align: center; }
 </style>
 <!-- Ctrl+A puis Ctrl+C ici, puis coller dans l'editeur DeviantArt :
-     l'italique et le gras sont conserves. -->
-$($body -join "`r`n")
+     l'italique, le gras et les lignes vides sont conserves. -->
+$($body -join ("`r`n" + ('<p>&nbsp;</p>' * $Blank) + "`r`n"))
 "@
 }
 
@@ -735,7 +740,7 @@ foreach ($file in $files) {
             if ((Test-Path -LiteralPath $outHtml) -and -not $Force) {
                 throw "$outHtml existe deja. Utilise -Force pour ecraser, ou -OutDir / -Suffix."
             }
-            Write-Utf8NoBom -Path $outHtml -Content (ConvertTo-DaHtml -Paragraphs $body -Title $partTitle)
+            Write-Utf8NoBom -Path $outHtml -Content (ConvertTo-DaHtml -Paragraphs $body -Title $partTitle -Blank $BlankLines)
             $written += $outHtml
         }
     }
