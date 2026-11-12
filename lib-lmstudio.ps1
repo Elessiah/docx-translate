@@ -1711,6 +1711,69 @@ function Find-DictationArtifacts {
     , $out
 }
 
+# Mots qui ne s'accordent jamais avec le narrateur, quelle que soit leur forme.
+# Compares sans accents : "ete" couvre "ete" participe (invariable avec avoir)
+# comme "l'ete" la saison.
+$script:NarratorNeverAgrees = @(
+    'merci', 'putain', 'bordel', 'merde', 'zut', 'bravo', 'salut', 'pardon',
+    'ete', 'oui', 'non', 'deux', 'trois', 'fois', 'autour',
+    # noms frequents dans "avoir peur", "avoir besoin", "de plaisir", "en enfer"
+    'corps', 'peur', 'besoin', 'plaisir', 'enfer', 'envie', 'sang',
+    ('c' + [char]0x0153 + 'ur')
+)
+
+# Devant un determinant, le mot est un nom (ou un adjectif nominalise) : "son
+# corps", "la peau", "un objet". Il s'accorde avec ce nom, pas avec le narrateur.
+$script:NarratorDeterminers = @(
+    'le', 'la', 'les', 'l', 'un', 'une', 'du', 'des', 'au', 'aux', 'de', 'd',
+    'mon', 'ma', 'mes', 'ton', 'ta', 'tes', 'son', 'sa', 'ses',
+    'notre', 'nos', 'votre', 'vos', 'leur', 'leurs',
+    'ce', 'cet', 'cette', 'ces', 'chaque', 'quel', 'quelle', 'quels', 'quelles'
+)
+
+# Juste apres un pronom sujet ou une negation, le mot est un verbe conjugue :
+# "j'allais", "je hais", "il sort", "ne sort".
+$script:NarratorSubjects = @(
+    'je', 'j', 'tu', 'il', 'elle', 'on', 'nous', 'vous', 'ils', 'elles', 'ne', 'n'
+)
+
+function Get-NarratorNoiseReason {
+    <# Raison pour laquelle le mot a $Start ne peut pas etre un accord avec le
+       narrateur, ou chaine vide s'il faut le soumettre au modele. Ne regarde que
+       le mot lui-meme et celui qui le precede immediatement, separe par des
+       blancs ou une apostrophe : une virgule entre les deux ("Pour elle,
+       epuise...") laisse le mot en lice. #>
+    param(
+        [Parameter(Mandatory)][string]$Paragraph,
+        [Parameter(Mandatory)][int]$Start,
+        [Parameter(Mandatory)][string]$Word
+    )
+    $lower = $Word.ToLowerInvariant()
+    $plain = (Remove-Diacritics -Text $lower)
+    if ($script:NarratorNeverAgrees -contains $plain -or $script:NarratorNeverAgrees -contains $lower) { return 'mot invariable' }
+
+    # Le "je" est singulier : un participe pluriel ("enflammes") ne s'y rapporte
+    # pas. Le e accentue final est teste sur la forme d'origine, la version sans
+    # accent le confondrait avec un feminin.
+    if ($lower -match ([string][char]0x00E9 + 's$')) { return 'pluriel' }
+    if ($plain -match '(ments|tions?|sions?|xions?)$') { return 'nom' }
+    # Imparfait, present en -ait/-ait et -ds : verbes ("existait", "reprends").
+    # "fait" et ses composes ("satisfait", "parfait") sont des participes.
+    if ($plain -match 'ait$' -and $plain -notmatch 'fait$') { return 'verbe conjugue' }
+    if ($plain -match 'ds$') { return 'verbe conjugue' }
+
+    $before = $Paragraph.Substring(0, $Start)
+    $apos = "['" + [char]0x2019 + ']'
+    $m = [regex]::Match($before, '(\p{L}+)(\s+|' + $apos + ')$')
+    if (-not $m.Success) { return '' }
+    $prev = (Remove-Diacritics -Text $m.Groups[1].Value.ToLowerInvariant())
+    if ($script:NarratorDeterminers -contains $prev) { return 'precede d''un determinant' }
+    if ($script:NarratorSubjects -contains $prev)    { return 'verbe conjugue' }
+    # "en imaginant" : gerondif, toujours invariable
+    if ($prev -eq 'en' -and $plain -match 'ant$')    { return 'gerondif' }
+    ''
+}
+
 function Get-NarratorCandidates {
     <# Tous les mots d'un paragraphe dont la forme ne correspond PAS au genre
        du narrateur. C'est la liste des fautes possibles, etablie par la seule
@@ -1733,6 +1796,9 @@ function Get-NarratorCandidates {
 
         $verdict = Test-NarratorAgreement -Word $w -Gender $Gender
         if (-not $verdict.Mismatch) { continue }
+        # Ecartes par regle avant le modele : chacun de ces mots finissait
+        # retenu "par prudence" et noyait les vrais desaccords.
+        if (Get-NarratorNoiseReason -Paragraph $Paragraph -Start $m.Index -Word $w) { continue }
 
         $out += @{
             Word     = $w

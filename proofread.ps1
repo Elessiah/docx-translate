@@ -100,7 +100,13 @@ if (-not $Model) { $Model = Get-DefaultModel }
 # -NoModel : passe LanguageTool seul, en quelques secondes et sans charger
 # le modele. Utile pour une verification rapide, ou quand la machine sert a
 # autre chose. Reserve au mode reperage : sans modele il n'y a rien a corriger.
-if ($NarratorOnly) { $ReportOnly = $true }
+if ($NarratorOnly) {
+    $ReportOnly = $true
+    # Mode "uniquement narrateur" : les 160 remarques generales de LanguageTool
+    # noyaient la trentaine d'accords a verifier. Elles ont leur passe a part,
+    # en 30 s : -ReportOnly -NoModel.
+    $NoLanguageTool = $true
+}
 if ($Dictation)    { $ReportOnly = $true }
 if ($NarratorOnly -and $NoModel) {
     throw "-NarratorOnly a besoin du modele : lui seul sait quels mots se rapportent au narrateur."
@@ -408,7 +414,10 @@ if ($ReportOnly) {
                 $temp = $Temperature + (0.15 * ($pass - 1))
                 try {
                     $r = Invoke-LMStudioChat -System $narPrompt -User $msg -Model $Model `
-                            -Endpoint $Endpoint -Temperature $temp -Think:$Think -MaxTokens 512
+                            -Endpoint $Endpoint -Temperature $temp -Think:$Think -MaxTokens 1024
+                    # 512 coupait la reflexion avant la reponse sur les longs
+                    # paragraphes (14 coupures sur 678 appels) : tout le
+                    # paragraphe etait alors retenu par prudence.
                     $genTokens += $r.Tokens
 
                     foreach ($line in ($r.Text -split '\r?\n')) {

@@ -207,6 +207,18 @@ par règle, jamais écrite par lui.
 Un mot n'est écarté que si **toutes** les passes le rejettent, et les écartés
 sont listés en fin de rapport plutôt que jetés.
 
+Avant le modèle, des règles sûres retirent ce qui ne peut pas s'accorder avec
+le narrateur : un nom précédé d'un déterminant (`son corps`, `la peau`), un
+verbe juste après un pronom sujet (`j'allais`), un pluriel en `-és`, un
+gérondif (`en imaginant`), quelques invariables (`Merci`, `été`, `peur`). Sur
+une nouvelle de 356 paragraphes, ces règles auraient ramené le rapport de 151
+à 57 accords à vérifier sans retirer un seul vrai désaccord. Les participes
+après *avoir* restent soumis : dans « il m'a poussé », le « m' » est la
+narratrice.
+
+Ce mode ne lance pas LanguageTool : ses remarques générales noyaient les
+accords. Pour elles, `-ReportOnly -NoModel` fait une passe à part en 30 s.
+
 Le genre est lu dans la fiche de contexte (`Narratrice : ...`, `Genre du
 narrateur : F`). Sans mention explicite, le script s'arrête au lieu de deviner.
 `-Narrator feminin` force la valeur.
